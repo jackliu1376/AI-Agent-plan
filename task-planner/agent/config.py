@@ -1,0 +1,113 @@
+"""Agent 运行时配置（全部来自环境变量，零硬编码）。"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
+
+WEEKDAY_CN = "一二三四五六日"
+
+# 已知的错误 base_url 后缀 → 人话解释。
+# 踩过的坑：DeepSeek 同时提供 OpenAI 兼容端点与 Anthropic 兼容端点，
+# 文档站上两者挨得很近，很容易把 /anthropic 复制过来。
+# 结果就是 SDK 拼出 https://api.deepseek.com/anthropic/chat/completions → 404。
+KNOWN_BAD_BASE_URL_SUFFIXES: dict[str, str] = {
+    "/anthropic": (
+        "这是 DeepSeek 的 Anthropic 兼容端点（供 Claude Code 等工具使用），"
+        "而本项目走的是 OpenAI 兼容协议"
+    ),
+    "/beta": "这是 DeepSeek 的 beta 端点，不是 OpenAI 兼容的正式端点",
+    "/v1/chat/completions": "这里应该填 base_url（到 /v1 为止），而不是完整的请求路径",
+}
+
+
+def _env(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip() or default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(_env(name, str(default)))
+    except ValueError:
+        return default
+
+
+def render_system_prompt(template: str, today: date | None = None) -> str:
+    """把当前日期注入系统提示词。
+
+    模型自身并不知道"今天"是哪一天，因此所有相对时间（"周末"、"下周三"、
+    "下个月"）都必须由 Host 把当天日期显式喂给它；否则它只能瞎猜日期，
+    或者反过来向用户提问本该自己推算的信息。
+    """
+    day = today or date.today()
+    return template.replace("{{CURRENT_DATE}}", day.isoformat()).replace(
+        "{{CURRENT_WEEKDAY}}", WEEKDAY_CN[day.weekday()]
+    )
+
+
+@dataclass(frozen=True)
+class Settings:
+    """一次性快照的运行参数。"""
+
+    api_key: str
+    base_url: str
+    model: str
+    max_turns: int
+    tool_budget: int
+    tool_timeout: int
+    tool_retries: int
+    prompt_path: Path
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(self.api_key) and not self.api_key.startswith("sk-xxxx")
+
+    @property
+    def normalized_base_url(self) -> str:
+        """去掉结尾斜杠，避免拼出 `//chat/completions`。"""
+        return self.base_url.rstrip("/")
+
+    def validate(self) -> str | None:
+        """返回配置错误的人话说明；None 表示配置正常。"""
+        url = self.normalized_base_url
+        if not url:
+            return (
+                "DEEPSEEK_BASE_URL 为空。\n"
+                "请设置为：DEEPSEEK_BASE_URL=https://api.deepseek.com"
+            )
+        if not url.startswith(("http://", "https://")):
+            return f"DEEPSEEK_BASE_URL 必须以 http:// 或 https:// 开头，当前为：{self.base_url}"
+
+        for suffix, why in KNOWN_BAD_BASE_URL_SUFFIXES.items():
+            if url.endswith(suffix):
+                return (
+                    f"DEEPSEEK_BASE_URL 配置有误：{self.base_url}\n"
+                    f"原因：{why}。\n"
+                    "SDK 会在此基础上拼接 /chat/completions，因此会返回 404。\n"
+                    "请改为：DEEPSEEK_BASE_URL=https://api.deepseek.com"
+                )
+        return None
+
+    @classmethod
+    def load(cls) -> "Settings":
+        return cls(
+            api_key=_env("DEEPSEEK_API_KEY"),
+            base_url=_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
+            model=_env("DEEPSEEK_MODEL", "deepseek-chat"),
+            max_turns=_env_int("MAX_TURNS", 8),
+            tool_budget=_env_int("TOOL_BUDGET", 12),
+            tool_timeout=_env_int("TOOL_TIMEOUT", 10),
+            tool_retries=_env_int("TOOL_RETRIES", 1),
+            prompt_path=PROJECT_ROOT / "agent" / "prompts" / "system.md",
+        )
+
+    def system_prompt(self, today: date | None = None) -> str:
+        """渲染系统提示词（注入当天日期）。"""
+        return render_system_prompt(self.prompt_path.read_text(encoding="utf-8"), today)

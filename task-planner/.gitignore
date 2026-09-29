@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+outputs/*
+!outputs/.gitkeep
+uv.lock
+dist/
+build/
+*.egg-info/
+
+# 自动生成的景点库（由 seed.py 重建）
+mcp_server/data/attractions.db

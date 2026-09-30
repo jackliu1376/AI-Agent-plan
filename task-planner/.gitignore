@@ -13,3 +13,7 @@ build/
 
 # 自动生成的景点库（由 seed.py 重建）
 mcp_server/data/attractions.db
+
+# GeoNames 原始数据包缓存（3.3MB，用 build_city_index.py 重新下载即可）
+mcp_server/data/.cache/
+

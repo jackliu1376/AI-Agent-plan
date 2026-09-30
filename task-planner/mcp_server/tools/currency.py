@@ -22,6 +22,7 @@ FALLBACK_TO_CNY: dict[str, float] = {
     "KRW": 0.0052,
     "HKD": 0.915,
     "TWD": 0.222,
+    "MOP": 0.889,
     "GBP": 9.05,
     "THB": 0.205,
     "SGD": 5.35,

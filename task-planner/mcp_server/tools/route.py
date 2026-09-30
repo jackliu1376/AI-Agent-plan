@@ -11,11 +11,11 @@ import math
 from pydantic import BaseModel, Field, field_validator
 
 from common.envelope import ERR_NOT_FOUND, ToolResult
-from mcp_server.data.cities import CITIES, lookup_city, supported_city_names
+from mcp_server.data.cities import CURATED, index_size, lookup_city
 from mcp_server.tools.base import register
 
 # 城市坐标来自 mcp_server/data/cities.py（与天气工具共用同一份事实来源）
-CITY_COORDS: dict[str, tuple[float, float]] = {c.name_zh: (c.lat, c.lon) for c in CITIES}
+CITY_COORDS: dict[str, tuple[float, float]] = {c.name_zh: (c.lat, c.lon) for c in CURATED}
 
 # 交通方式：(里程系数, 平均时速 km/h, 附加耗时 h, 每公里单价 ¥)
 MODE_PROFILE: dict[str, tuple[float, float, float, float]] = {
@@ -87,9 +87,9 @@ def estimate_route(params: RouteParams) -> ToolResult:
     if missing:
         return ToolResult.failure(
             ERR_NOT_FOUND,
-            f"内置坐标库中没有这些城市: {', '.join(missing)}。"
-            f"已支持 {len(supported_city_names())} 个城市: "
-            f"{', '.join(supported_city_names())}",
+            f"无法解析这些城市: {', '.join(missing)}。"
+            f"本地城市库已收录 {index_size()} 个城市（覆盖 229 个国家/地区，中英文名均可）。"
+            "请确认拼写，或如实告知用户无法估算该路线。",
         )
 
     assert origin is not None and destination is not None  # for type checkers
@@ -109,9 +109,7 @@ def estimate_route(params: RouteParams) -> ToolResult:
             source="offline:city-coords",
         )
 
-    straight = haversine_km(
-        CITY_COORDS[origin_name], CITY_COORDS[dest_name]
-    )
+    straight = haversine_km((origin.lat, origin.lon), (destination.lat, destination.lon))
     detour, speed, overhead, unit_price = MODE_PROFILE[params.mode]
     distance = straight * detour
     duration = distance / speed + overhead

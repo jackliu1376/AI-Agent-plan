@@ -27,7 +27,7 @@ import httpx
 from pydantic import BaseModel, Field, field_validator
 
 from common.envelope import ERR_BAD_ARGS, ERR_NOT_FOUND, ERR_UPSTREAM_ERROR, ToolResult
-from mcp_server.data.cities import cities_by_country, lookup_city
+from mcp_server.data.cities import index_size, lookup_city
 from mcp_server.tools.base import env_int, register
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
@@ -115,8 +115,11 @@ def _rank_candidate(candidate: dict[str, Any]) -> tuple[int, int]:
 
 
 def resolve_city(query: str) -> tuple[ResolvedCity | None, str]:
-    """解析城市。返回 (结果, 错误信息)。"""
-    # 1) 本地坐标表优先 —— 确定性、无网络、中文名可靠
+    """解析城市。返回 (结果, 错误信息)。
+
+    顺序：策展表 → GeoNames 生成索引 → Open-Meteo 地理编码（带置信度标记）。
+    """
+    # 1) 本地解析（策展表 + 生成索引，共 1.4 万+ 城市）
     local = lookup_city(query)
     if local is not None:
         return (
@@ -127,7 +130,7 @@ def resolve_city(query: str) -> tuple[ResolvedCity | None, str]:
                 timezone=local.timezone,
                 resolved_name=local.name_zh,
                 country=local.country,
-                matched_via="local-city-table",
+                matched_via=local.source,  # curated-table | city-index
             ),
             "",
         )
@@ -139,11 +142,11 @@ def resolve_city(query: str) -> tuple[ResolvedCity | None, str]:
     )
     results = geo.get("results") or []
     if not results:
-        grouped = cities_by_country()
-        supported = "；".join(f"{c}（{len(n)} 个）" for c, n in grouped.items())
         return None, (
-            f"未找到城市「{query}」。本地坐标表已覆盖：{supported}。"
-            "请确认城市名拼写，或换用表中已支持的城市。"
+            f"未找到城市「{query}」。本地城市库已收录 {index_size()} 个城市"
+            "（覆盖 229 个国家/地区，中英文名均可）。"
+            "请确认拼写；若确实是本地库未收录的小众目的地，"
+            "请如实告知用户「无法获取该地天气」，不要凭记忆编造。"
         )
 
     best = sorted(results, key=_rank_candidate)[0]

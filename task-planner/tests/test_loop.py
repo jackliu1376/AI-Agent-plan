@@ -564,7 +564,9 @@ def test_unrecoverable_output_marks_failure(settings: Settings, runner) -> None:
 
     assert result.ok is False
     assert result.plan is None
-    assert result.trace.stop_reason == "invalid_output"
+    # 语义拆分：stop_reason 说「循环怎么结束的」，output_status 说「产出能不能用」
+    assert result.trace.stop_reason == "model_finished"
+    assert result.trace.output_status == "invalid_output"
 
 
 def test_max_turns_stops_runaway_loop(settings: Settings, fake_weather, runner) -> None:
@@ -577,7 +579,9 @@ def test_max_turns_stops_runaway_loop(settings: Settings, fake_weather, runner) 
     result = Orchestrator(llm, runner, tight).run("成都 2 日游")
 
     assert result.trace.turns == 2
-    assert result.trace.stop_reason in {"max_turns_reached", "invalid_output"}
+    assert result.trace.stop_reason == "max_turns_reached"
+    # 模型全程只调工具、从未返回文本 → 修复重试也拿不到计划
+    assert result.trace.output_status == "invalid_output"
 
 
 # ---------------------------------------------------------------------------

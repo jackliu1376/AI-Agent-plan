@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -38,7 +39,9 @@ class LocalToolRunner:
         return openai_tool_schemas()
 
     async def call(self, name: str, args: dict[str, Any]) -> ToolResult:
-        return invoke(name, args)
+        # invoke() 是同步的：天气等外部 API 工具会阻塞 1–2 秒，重试时还会 sleep。
+        # 放进线程池执行，否则会拖住整个事件循环（Web 服务下表现为所有请求一起卡住）。
+        return await asyncio.to_thread(invoke, name, args)
 
     async def aclose(self) -> None:
         return None

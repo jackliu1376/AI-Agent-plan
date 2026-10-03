@@ -9,7 +9,7 @@ import json
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from common.envelope import ToolError, ToolMeta, ToolResult  # noqa: F401  (对外转出)
 
@@ -78,6 +78,40 @@ class Plan(BaseModel):
     total_eta: str = ""
     budget_estimate: str = ""
 
+    # -- 结构校验 ---------------------------------------------------------
+    #
+    # 这几条不是「格式好看」，而是「计划是否可用」的底线。
+    # 没有它们时，模型返回 {"goal":"x","phases":[]} 会被判定为成功，
+    # 用户拿到空计划却被告知成功，批量评测也会把这类样本误计为通过。
+
+    @model_validator(mode="after")
+    def _validate_structure(self) -> "Plan":
+        steps = self.all_steps()
+
+        if not steps:
+            raise ValueError(
+                "计划至少需要 1 个步骤：phases 不能为空，且每个 phase 的 steps 不能为空"
+            )
+
+        ids = [s.id for s in steps]
+        seen: set[str] = set()
+        dupes: set[str] = set()
+        for step_id in ids:
+            if step_id in seen:
+                dupes.add(step_id)
+            seen.add(step_id)
+        if dupes:
+            raise ValueError(
+                f"步骤 id 必须全局唯一，发现重复：{sorted(dupes)}。"
+                "重复 id 会导致依赖关系指向错误的步骤。"
+            )
+
+        blank = [s.id for s in steps if not s.action.strip()]
+        if blank:
+            raise ValueError(f"以下步骤的 action 为空：{blank}")
+
+        return self
+
     # -- 派生校验 ---------------------------------------------------------
 
     def all_steps(self) -> list[Step]:
@@ -90,27 +124,36 @@ class Plan(BaseModel):
             for dep in step.depends_on:
                 if dep not in steps:
                     return False, f"步骤 {step.id} 依赖了不存在的 {dep}"
+                if dep == step.id:
+                    return False, f"步骤 {step.id} 依赖了自己"
 
         WHITE, GRAY, BLACK = 0, 1, 2
         color = dict.fromkeys(steps, WHITE)
 
-        def visit(node: str, path: list[str]) -> tuple[bool, str]:
-            if color[node] == GRAY:
-                return False, "存在循环依赖: " + " -> ".join([*path, node])
-            if color[node] == BLACK:
-                return True, ""
-            color[node] = GRAY
-            for dep in steps[node].depends_on:
-                ok, msg = visit(dep, [*path, node])
-                if not ok:
-                    return False, msg
-            color[node] = BLACK
-            return True, ""
+        # 迭代式 DFS：超长依赖链（>1000 步）也不会触发递归深度限制
+        for root in steps:
+            if color[root] != WHITE:
+                continue
+            path: list[str] = []
+            stack: list[tuple[str, int]] = [(root, 0)]
+            while stack:
+                node, index = stack.pop()
+                if index == 0:
+                    if color[node] == GRAY:
+                        return False, "存在循环依赖: " + " -> ".join([*path, node])
+                    if color[node] == BLACK:
+                        continue
+                    color[node] = GRAY
+                    path.append(node)
 
-        for sid in steps:
-            ok, msg = visit(sid, [])
-            if not ok:
-                return False, msg
+                deps = steps[node].depends_on
+                if index < len(deps):
+                    stack.append((node, index + 1))
+                    stack.append((deps[index], 0))
+                else:
+                    color[node] = BLACK
+                    if path and path[-1] == node:
+                        path.pop()
         return True, "ok"
 
     def referenced_tools(self) -> set[str]:

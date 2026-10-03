@@ -56,6 +56,27 @@ def _make_ask_user(interactive: bool):
     return ask
 
 
+def _error_hint(exc: BaseException) -> str:
+    """把常见异常翻译成可操作的排查提示。"""
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+
+    if "401" in text or "authentication" in text or "invalid api key" in text:
+        return "检查 DEEPSEEK_API_KEY 是否正确、是否已过期。"
+    if "404" in text:
+        return (
+            "检查 DEEPSEEK_BASE_URL —— DeepSeek 的 Anthropic 兼容端点会 404，"
+            "应使用 https://api.deepseek.com"
+        )
+    if "429" in text or "rate limit" in text:
+        return "被上游限流。稍后重试，或降低并发。"
+    if "timeout" in name or "timeout" in text:
+        return "上游超时。可调大 LLM_TIMEOUT，或稍后重试。"
+    if "connect" in name or "connection" in text:
+        return "网络不可达。检查网络连接或代理设置。"
+    return ""
+
+
 def _print_result(result) -> int:  # noqa: ANN001
     print("\n" + "=" * 60)
     print("📋 计划（人类可读版）")
@@ -115,6 +136,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--save", metavar="FILE", help="把 Markdown 计划保存到 outputs/<FILE>")
     parser.add_argument("--json", action="store_true", help="额外输出机器可读 JSON")
     parser.add_argument("--max-turns", type=int, default=None, help="覆盖最大轮次")
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="以事件流方式输出进度（验证流式接口；Web 层走同一套事件）",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="打印编排过程日志")
     args = parser.parse_args(argv)
 
@@ -153,24 +179,57 @@ def main(argv: list[str] | None = None) -> int:
     ask_user = _make_ask_user(interactive=not args.demo and sys.stdin.isatty())
 
     # ---- 选择工具通道 ----
-    if args.transport == "mcp":
-        import asyncio
+    def _on_event(event) -> None:  # noqa: ANN001
+        icons = {
+            "run_started": "▶",
+            "turn_started": "◆",
+            "tool_call": "→",
+            "clarification": "?",
+            "repair": "!",
+            "plan_ready": "✔",
+        }
+        prefix = icons.get(event.type, " ")
+        print(f"  {prefix} {event.summary()}")
 
-        async def _run_mcp():
-            async with MCPToolRunner() as runner:
-                names = await runner.list_remote_tools()
-                print(f"🔌 已通过 MCP 协议发现 {len(names)} 个工具：{', '.join(sorted(names))}")
-                orch = Orchestrator(
-                    llm, runner, settings, ask_user, verbose=args.verbose
-                )
-                return await orch.run_async(task, max_turns=args.max_turns)
+    stream_cb = _on_event if args.stream else None
 
-        result = asyncio.run(_run_mcp())
-    else:
-        orch = Orchestrator(
-            llm, LocalToolRunner(), settings, ask_user, verbose=args.verbose
-        )
-        result = orch.run(task, max_turns=args.max_turns)
+    try:
+        if args.transport == "mcp":
+            import asyncio
+
+            async def _run_mcp():
+                async with MCPToolRunner() as runner:
+                    names = await runner.list_remote_tools()
+                    print(
+                        f"🔌 已通过 MCP 协议发现 {len(names)} 个工具："
+                        f"{', '.join(sorted(names))}"
+                    )
+                    orch = Orchestrator(
+                        llm, runner, settings, ask_user, verbose=args.verbose
+                    )
+                    return await orch.run_async(
+                        task, max_turns=args.max_turns, on_event=stream_cb
+                    )
+
+            result = asyncio.run(_run_mcp())
+        else:
+            import asyncio
+
+            orch = Orchestrator(
+                llm, LocalToolRunner(), settings, ask_user, verbose=args.verbose
+            )
+            result = asyncio.run(
+                orch.run_async(task, max_turns=args.max_turns, on_event=stream_cb)
+            )
+    except KeyboardInterrupt:
+        print("\n⏹  已中断", file=sys.stderr)
+        return 130
+    except Exception as exc:  # noqa: BLE001 - CLI 顶层兜底：给人话，不吐 traceback
+        print(f"\n❌ 运行失败：{type(exc).__name__}: {exc}", file=sys.stderr)
+        hint = _error_hint(exc)
+        if hint:
+            print(f"   {hint}", file=sys.stderr)
+        return 1
 
     code = _print_result(result)
 

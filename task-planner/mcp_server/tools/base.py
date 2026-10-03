@@ -16,9 +16,11 @@ import os
 import sys
 import time
 import traceback
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
@@ -31,6 +33,11 @@ from common.envelope import (
     ToolResult,
 )
 
+try:  # httpx 是工具层的依赖；缺失时不影响核心层导入
+    import httpx
+except ImportError:  # pragma: no cover
+    httpx = None  # type: ignore[assignment]
+
 # 项目根目录（task-planner/）
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -41,11 +48,74 @@ def env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip() or default
 
 
-def env_int(name: str, default: int) -> int:
+def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    """读整数环境变量。非法值回落到默认值，而不是让进程崩掉。"""
     try:
-        return int(env(name, str(default)))
+        value = int(env(name, str(default)))
     except ValueError:
         return default
+    if minimum is not None and value < minimum:
+        return default
+    return value
+
+
+# ---------------------------------------------------------------------------
+# 运行期配置注入
+# ---------------------------------------------------------------------------
+#
+# 工具需要「超时」和「重试次数」两个参数。它们既可能来自环境变量，
+# 也可能来自 ``Settings``（由编排循环注入）。
+#
+# 早期版本里工具直接读 env，导致 ``Settings.tool_timeout`` 成为死字段 ——
+# 测试里构造 ``Settings(tool_timeout=1)`` 完全不生效。
+# 现在统一走这两个函数：优先取注入值，否则回落环境变量。
+
+_tool_timeout: ContextVar[int | None] = ContextVar("tool_timeout", default=None)
+_tool_retries: ContextVar[int | None] = ContextVar("tool_retries", default=None)
+
+DEFAULT_TOOL_TIMEOUT = 10
+DEFAULT_TOOL_RETRIES = 1
+
+
+def tool_timeout(default: int = DEFAULT_TOOL_TIMEOUT) -> int:
+    """当前生效的工具超时（秒）。"""
+    override = _tool_timeout.get()
+    return override if override is not None else env_int("TOOL_TIMEOUT", default, minimum=1)
+
+
+def tool_retries(default: int = DEFAULT_TOOL_RETRIES) -> int:
+    """当前生效的工具重试次数。"""
+    override = _tool_retries.get()
+    return override if override is not None else env_int("TOOL_RETRIES", default, minimum=0)
+
+
+@contextmanager
+def tool_settings(*, timeout: int | None = None, retries: int | None = None) -> Iterator[None]:
+    """在 ``with`` 块内覆盖工具超时 / 重试次数。
+
+    配合 ``asyncio.to_thread`` 使用：线程会复制当前 context，因此覆盖值能带进去。
+    """
+    tokens: list[tuple[ContextVar[int | None], Any]] = []
+    if timeout is not None:
+        tokens.append((_tool_timeout, _tool_timeout.set(timeout)))
+    if retries is not None:
+        tokens.append((_tool_retries, _tool_retries.set(retries)))
+    try:
+        yield
+    finally:
+        for var, token in reversed(tokens):
+            var.reset(token)
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """判断是否为超时异常。
+
+    注意 ``httpx.TimeoutException`` 继承自 ``httpx.HTTPError`` 而**不是**内置
+    ``TimeoutError``，所以只写 ``except TimeoutError`` 是抓不到 httpx 超时的。
+    """
+    if httpx is not None and isinstance(exc, httpx.TimeoutException):
+        return True
+    return "timeout" in type(exc).__name__.lower()
 
 
 # 瞬时故障 —— 值得重试
@@ -132,7 +202,7 @@ def invoke(name: str, args: dict[str, Any] | None = None, *, retries: int | None
         )
 
     args = args or {}
-    max_retries = retries if retries is not None else env_int("TOOL_RETRIES", 1)
+    max_retries = retries if retries is not None else tool_retries()
     attempt = 0
 
     while True:
@@ -160,10 +230,11 @@ def invoke(name: str, args: dict[str, Any] | None = None, *, retries: int | None
             result.meta.latency_ms = _latency()
             result.meta.attempts = attempt
             return result
-        except TimeoutError as exc:
-            code, message = ERR_UPSTREAM_TIMEOUT, f"上游超时: {exc}"
         except Exception as exc:  # noqa: BLE001 - 统一兜底
-            code, message = ERR_UNEXPECTED, f"{type(exc).__name__}: {exc}"
+            if _is_timeout(exc):
+                code, message = ERR_UPSTREAM_TIMEOUT, f"上游超时: {exc}"
+            else:
+                code, message = ERR_UNEXPECTED, f"{type(exc).__name__}: {exc}"
             if env("TOOL_DEBUG") == "1":
                 traceback.print_exc()
 

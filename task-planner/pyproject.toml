@@ -12,11 +12,16 @@ dependencies = [
     "httpx>=0.27.0",
     "python-dotenv>=1.0.1",
     "zhconv>=1.4.3",
+    "fastapi>=0.142.2",
+    "uvicorn[standard]>=0.54.0",
+    "pywebview>=6.2.1",
 ]
 
 [project.scripts]
 task-planner = "agent.cli:main"
 task-planner-server = "mcp_server.server:main"
+task-planner-web = "web.serve:main"
+task-planner-desktop = "desktop.app:main"
 
 [dependency-groups]
 dev = [

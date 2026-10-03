@@ -32,11 +32,33 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip() or default
 
 
-def _env_int(name: str, default: int) -> int:
+def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    """读整数环境变量。非法值（非数字 / 低于下限）回落到默认值。
+
+    早期版本只 catch ``ValueError``，导致 ``MAX_TURNS=-1`` 这类配置错误
+    被静默接受 —— 编排循环会一轮都不跑，直接返回「未产出计划」，
+    用户完全看不出是配置写错了。
+    """
     try:
-        return int(_env(name, str(default)))
+        value = int(_env(name, str(default)))
     except ValueError:
         return default
+    if minimum is not None and value < minimum:
+        return default
+    return value
+
+
+def _env_float(name: str, default: float, *, minimum: float | None = None,
+               maximum: float | None = None) -> float:
+    try:
+        value = float(_env(name, str(default)))
+    except ValueError:
+        return default
+    if minimum is not None and value < minimum:
+        return default
+    if maximum is not None and value > maximum:
+        return default
+    return value
 
 
 def render_system_prompt(template: str, today: date | None = None) -> str:
@@ -64,6 +86,11 @@ class Settings:
     tool_timeout: int
     tool_retries: int
     prompt_path: Path
+
+    # 可选调优项，带默认值（放最后，不破坏既有位置参数构造）
+    llm_timeout: int = 60
+    llm_max_retries: int = 2
+    temperature: float = 0.2
 
     @property
     def has_credentials(self) -> bool:
@@ -101,13 +128,22 @@ class Settings:
             api_key=_env("DEEPSEEK_API_KEY"),
             base_url=_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
             model=_env("DEEPSEEK_MODEL", "deepseek-chat"),
-            max_turns=_env_int("MAX_TURNS", 8),
-            tool_budget=_env_int("TOOL_BUDGET", 12),
-            tool_timeout=_env_int("TOOL_TIMEOUT", 10),
-            tool_retries=_env_int("TOOL_RETRIES", 1),
+            max_turns=_env_int("MAX_TURNS", 8, minimum=1),
+            tool_budget=_env_int("TOOL_BUDGET", 12, minimum=1),
+            tool_timeout=_env_int("TOOL_TIMEOUT", 10, minimum=1),
+            tool_retries=_env_int("TOOL_RETRIES", 1, minimum=0),
             prompt_path=PROJECT_ROOT / "agent" / "prompts" / "system.md",
+            llm_timeout=_env_int("LLM_TIMEOUT", 60, minimum=5),
+            llm_max_retries=_env_int("LLM_MAX_RETRIES", 2, minimum=0),
+            temperature=_env_float("LLM_TEMPERATURE", 0.2, minimum=0.0, maximum=2.0),
         )
 
     def system_prompt(self, today: date | None = None) -> str:
         """渲染系统提示词（注入当天日期）。"""
-        return render_system_prompt(self.prompt_path.read_text(encoding="utf-8"), today)
+        try:
+            template = self.prompt_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(
+                f"读取系统提示词失败：{self.prompt_path}\n原因：{exc}"
+            ) from exc
+        return render_system_prompt(template, today)

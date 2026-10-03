@@ -18,7 +18,14 @@ from mcp_server.tools.base import register
 class AttractionsParams(BaseModel):
     city: str = Field(description="城市名，如 成都")
     tags: list[str] = Field(default_factory=list, description="标签过滤，如 ['亲子','自然']")
-    max_price: float | None = Field(default=None, ge=0, description="人均价格上限（元）")
+    max_price: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "人均价格上限。**注意单位是当地货币，不是人民币** —— "
+            "例如东京的 1000 指 1000 日元。需要人民币口径请先自行换算。"
+        ),
+    )
     limit: int = Field(default=10, ge=1, le=50, description="返回条数上限")
     kid_friendly_only: bool = Field(default=False, description="只看亲子友好")
 
@@ -37,6 +44,30 @@ class AttractionsParams(BaseModel):
         if isinstance(v, str):
             return [t.strip() for t in v.replace("，", ",").split(",") if t.strip()]
         return v
+
+
+def _coverage_note() -> str:
+    """从数据库实时生成覆盖说明。
+
+    手写的覆盖描述会随数据增长而过时 —— 这里曾经写着「5 国内 + 7 国际」，
+    而实际已经 42 城。**这段文字会直接进入 LLM 的 tools 参数**，
+    过时描述会让模型误以为目标城市没有数据，从而放弃调用本工具。
+    """
+    try:
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT country, COUNT(DISTINCT city) AS n FROM attractions "
+                "GROUP BY country ORDER BY n DESC, country"
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - 描述生成失败不该阻断工具注册
+        return ""
+
+    if not rows:
+        return ""
+
+    total = sum(int(r["n"]) for r in rows)
+    detail = "、".join(f"{r['country']} {r['n']}" for r in rows)
+    return f"当前库覆盖 {total} 个城市（{detail}）。"
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
@@ -58,8 +89,9 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     name="query_attractions_db",
     description=(
         "从本地景点数据库中查询符合条件的景点（支持城市、标签、人均价格上限、是否亲子友好）。"
-        "覆盖国内城市（成都/杭州/北京/西安/三亚）与主要国际城市（纽约/东京/巴黎/伦敦/新加坡/曼谷/首尔）。"
-        "注意：价格是**当地货币**，由 currency 字段标注；如需折算成人民币请再调用 convert_currency。"
+        "覆盖中国全部省级行政区（含港澳台）与主要国际城市。"
+        + _coverage_note()
+        + "注意：价格是**当地货币**，由 currency 字段标注；如需折算成人民币请再调用 convert_currency。"
         "数据为本地离线库，不需要网络。"
     ),
     params_model=AttractionsParams,
@@ -81,9 +113,6 @@ def query_attractions_db(params: AttractionsParams) -> ToolResult:
 
     with connect() as conn:
         rows = conn.execute(sql, args).fetchall()
-        covered = sorted(
-            {r["city"] for r in conn.execute("SELECT DISTINCT city FROM attractions")}
-        )
 
     # 标签过滤在 Python 侧做（标签是逗号分隔字符串，SQL 里做交集不划算）
     if params.tags:
@@ -93,6 +122,11 @@ def query_attractions_db(params: AttractionsParams) -> ToolResult:
     items = [_row_to_dict(r) for r in rows[: params.limit]]
 
     if not items:
+        # 只有失败路径才需要覆盖清单（此前每次查询都跑一遍全表 DISTINCT）
+        with connect() as conn:
+            covered = sorted(
+                {r["city"] for r in conn.execute("SELECT DISTINCT city FROM attractions")}
+            )
         return ToolResult.failure(
             ERR_NOT_FOUND,
             f"没有符合条件的景点（city={params.city}, tags={params.tags}, "

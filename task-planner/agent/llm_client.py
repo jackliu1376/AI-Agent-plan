@@ -69,6 +69,10 @@ class DeepSeekClient:
         self._client = OpenAI(
             api_key=self.settings.api_key,
             base_url=self.settings.normalized_base_url,
+            # SDK 默认超时 600 秒 —— 上游挂起时整个会话会静默卡 10 分钟。
+            # Web 层表现为「该会话一直不动且没有任何事件」。
+            timeout=float(self.settings.llm_timeout),
+            max_retries=self.settings.llm_max_retries,
         )
         self._model = self.settings.model
 
@@ -80,13 +84,20 @@ class DeepSeekClient:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
-            "temperature": 0.2,
+            "temperature": self.settings.temperature,
         }
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
         completion = self._client.chat.completions.create(**kwargs)
+
+        if not completion.choices:
+            raise RuntimeError(
+                "模型返回了空的 choices（可能是内容被安全策略拦截）。"
+                "请调整任务描述后重试。"
+            )
+
         choice = completion.choices[0]
         msg = choice.message
 

@@ -1,7 +1,7 @@
 # 任务规划助手 · 评测报告
 
 > 运行命令：`uv run pytest`
-> 结果：**193 passed in 59.43s** ｜ 通过率 **100%** ｜ 更新日期 2026-09-29
+> 结果：**225 passed in 59.61s** ｜ 通过率 **100%** ｜ 更新日期 2026-09-30
 
 ---
 
@@ -13,8 +13,10 @@
 | `tests/test_tools.py` | 28 | 8 个工具的行为、错误码、沙箱、重试、幂等、Schema 合规 |
 | `tests/test_loop.py` | 27 | 编排循环 + 全部护栏（TC-01 ~ TC-10） |
 | `tests/test_config.py` | 18 | base_url 校验、系统提示词日期注入、密钥泄漏扫描 |
+| `tests/test_stream.py` | 16 | 事件流序列、JSON 可序列化、澄清挂起与恢复 |
+| `tests/test_web.py` | 16 | HTTP 路由、SSE 重放/续传、澄清跨请求、不阻塞事件循环 |
 | `tests/test_mcp_bridge.py` | 4 | MCP 协议桥接（真实拉起子进程，stdio/JSON-RPC 往返） |
-| **合计** | **193** | **全部通过** |
+| **合计** | **225** | **全部通过** |
 
 测试策略：**脚本化 LLM + 真实工具**。LLM 用 `ScriptedLLM` 按剧本返回（不消耗真实 API），
 但工具是真实执行的，因此测的是「编排逻辑 + 工具 + 护栏」这一整条链路，
@@ -308,7 +310,7 @@
 ```bash
 cd task-planner
 uv sync
-uv run pytest            # 193 passed
+uv run pytest            # 225 passed
 uv run pytest -v         # 查看每个用例名
 ```
 
@@ -316,11 +318,14 @@ uv run pytest -v         # 查看每个用例名
 
 ```bash
 uv run task-planner --demo -v                      # 离线全链路（真实工具）
+uv run task-planner --demo --stream                # 事件流输出
 uv run task-planner --demo --transport mcp -v      # 走 MCP 协议
 uv run task-planner "我想去旅行" -v                  # 真实 DeepSeek（需 Key）
 uv run task-planner "我想这周末去纽约玩两天，两个人" -v  # 国际行程
 uv run task-planner "帮我规划这周末去伊斯坦布尔玩三天" -v  # 景点库未覆盖时的降级
 uv run task-planner "规划这周末去哈尔滨玩三天，带小孩" -v  # 新增省会 + 季节性数据
+
+uv run task-planner-web                            # 启动 Web 服务 → :8000/docs
 ```
 
 ---
@@ -442,3 +447,474 @@ uv run task-planner "规划这周末去哈尔滨玩三天，带小孩" -v  # 新
 | 用例 C（纽约 3 轮，5 次工具调用） | 13,897 | 4,276 | 18,173 |
 | 用例 D（伊斯坦布尔 2 轮，3 次工具调用） | 7,882 | 3,422 | 11,304 |
 | 用例 E（哈尔滨 2 轮，3 次工具调用） | 8,015 | 3,093 | 11,108 |
+
+---
+
+## 七、事件流改造记录（2026-09-30）
+
+> 这不是缺陷修复，而是为「Web 前端」做的前置改造。记录在此是因为它验证了一个
+> 重要的工程判断方法。
+
+### 背景
+
+要让客户在网页上使用，编排循环必须从「一次性阻塞返回」改成「可流式、可暂停恢复」。
+改造前有三个硬约束：
+
+| 障碍 | 改造前 | 为什么是问题 |
+|---|---|---|
+| 澄清是同步阻塞的 | `answer = self.ask_user(payload)` 卡在 `input()` | Web 里没有 stdin，必须改成「暂停 → 推给前端 → 等回答 → 恢复」 |
+| 没有流式输出 | 只有最终 `PlanResult` | 一次跑 10–60 秒，用户盯着转圈会以为卡死 |
+| 无会话概念 | 每次调用独立 | 澄清要跨请求保持状态 |
+
+### 改造方式
+
+核心决定：**让 `run()` / `run_async()` 变成 `run_stream()` 的消费者，而不是重写一份逻辑。**
+
+```
+改造前：  run() / run_async()  ← 唯一实现
+改造后：  run_stream()          ← 唯一实现（异步生成器，产出 Event）
+              ↑
+          run_async()  ← 消费事件流，返回 PlanResult
+              ↑
+          run()        ← 同步薄封装（asyncio.run）
+```
+
+具体改动：
+
+1. 新增 `agent/events.py` —— `Event` 数据类 + 8 种事件类型
+2. `AskUserFn` 从 `Callable[[dict], str]` 放宽为 `Callable[[dict], str | Awaitable[str]]`，
+   `_resolve_clarification()` 用 `inspect.isawaitable()` 兼容同步/异步回调
+3. 澄清处理从 `_execute()` **移出**到 `run_stream()` —— 因为它需要「产出事件 + 挂起」，
+   而 `_execute()` 是普通协程，产不出事件
+4. 新增 `run_stream()`，逐段产出 `run_started` / `turn_started` / `tool_call` /
+   `tool_result` / `clarification` / `repair` / `plan_ready`
+5. CLI 新增 `--stream`，用 `on_event` 回调打印事件
+
+### 验收结果
+
+| 检查项 | 结果 |
+|---|---|
+| **既有 193 个测试** | ✅ **一行没改，全部通过** —— 这是「重构行为不变」的最强证据 |
+| 新增 16 个事件流测试 | ✅ 全通过 |
+| 事件 `data` JSON 可序列化 | ✅ 逐事件断言（SSE 的前提） |
+| 澄清事件能产出并挂起 | ✅ 异步 `ask_user` 被正确 await |
+| 同步 `ask_user` 向后兼容 | ✅ CLI 与既有测试不受影响 |
+| 四种运行组合 | ✅ 普通 / 流式 / MCP / MCP+流式 全部正常 |
+| 真实 DeepSeek 流式运行 | ✅ 事件按序产出，计划正常 |
+
+### 一个可复用的判断方法
+
+> **重构时，如果既有测试需要修改才能通过，说明改动大概率不是「行为不变」的重构，
+> 而是行为变更。**
+
+本次改造前 193 个测试全部保留未动，改完直接跑绿——这个信号比任何自我审查都可靠。
+唯一需要新增的是「新能力」的测试（事件流本身），而不是「修补旧测试」。
+
+### 遗留
+
+- `_last_result` 暂存在实例上，因此**同一 Orchestrator 实例不能并发跑多个任务**。
+  Web 层应为每个会话创建独立实例。已在类文档字符串中注明。
+- Web 层（FastAPI + SSE）与前端（React）尚未实现，属于 Step 2/3。
+
+---
+
+## 八、Web 服务层记录（2026-09-30）
+
+> 对应 Step 2。前端（React）属于 Step 3，尚未开始。
+
+### 交付物
+
+| 文件 | 职责 |
+|---|---|
+| `web/app.py` | 路由、SSE、限流、CORS、静态托管 |
+| `web/session.py` | 会话状态、事件重放、澄清挂起/唤醒、TTL 回收 |
+| `web/serve.py` | 启动入口（`uv run task-planner-web`） |
+| `tests/test_web.py` | 16 个用例 |
+
+### 路由
+
+`GET /api/health` · `GET /api/tools` · `POST /api/sessions` ·
+`GET /api/sessions/{id}` · `GET /api/sessions/{id}/events`（SSE，支持 `?cursor=N`）·
+`POST /api/sessions/{id}/answers` · `DELETE /api/sessions/{id}`
+
+### 修复的两个阻塞性隐患（🔴）
+
+这两个都不是「功能缺失」，而是**会让 Web 服务直接不可用**的问题。
+
+**隐患 A：同步调用阻塞事件循环**
+
+`DeepSeekClient.chat()` 与 `LocalToolRunner.call()` 都是同步的。
+在 CLI 里无所谓（单用户串行），但放进异步 Web 服务后：
+
+- 一次 LLM 调用 5–30 秒 → 期间**所有其他请求全部卡死**
+- 天气工具阻塞 1–2 秒 → 同样卡死
+
+修复：两处都包进 `asyncio.to_thread()`。
+`tests/test_web.py::test_slow_llm_does_not_block_other_requests` 用「LLM 阻塞 0.5 秒，
+测量 `/api/health` 响应时间必须 < 0.2 秒」来钉住这个行为。
+
+**隐患 B：SSE 事件丢失**
+
+如果事件推进一次性队列，客户端晚连几秒就会丢掉开头。
+改为**事件保留在会话里 + 客户端带游标重放**，断线重连传 `?cursor=N` 即可续传。
+
+### 三个非显然的设计点
+
+1. **为什么「先 POST 建会话，再 GET 订阅」？**
+   `EventSource` 只能发 GET 且不能带自定义请求头，任务参数塞不进流式请求。
+2. **为什么事件不用 SSE 的 `event:` 字段？**
+   统一走默认 `message` 事件、按 `data.type` 分派，前端只需一个 handler。
+3. **澄清为什么是「暂停」而不是「中断」？**
+   服务端协程挂在 `asyncio.Future` 上，状态置为 `awaiting_input`，
+   用户回答后由另一个 HTTP 请求 `set_result` 唤醒。同时处理了「答案比 Future 先到」
+   的竞态（SSE 推送与 HTTP 提交是两条独立链路）。
+
+### 验收结果
+
+| 检查项 | 结果 |
+|---|---|
+| 单元测试 | ✅ 225 passed（新增 16 个 Web 用例） |
+| 真实启动 + curl | ✅ health / tools / sessions / SSE 全部正常 |
+| SSE 事件流（真实 DeepSeek） | ✅ `run_started → turn_started → tool_call → tool_result → plan_ready` 按序到达 |
+| 澄清跨请求（真实 DeepSeek） | ✅ 状态转 `awaiting_input` → POST 答案 → 恢复 → 产出 19 步计划 |
+| 限流 | ✅ 连续 12 次建会话：前 10 次 200，第 11 次起 429 |
+| Swagger 文档 | ✅ `/docs` 返回 200 |
+| 既有 209 个测试 | ✅ 全部通过（异步化改造未改变行为） |
+
+### 一个测试踩的坑
+
+`test_clarification_flow_over_http` 最初在 SSE 流的读取循环里**嵌套发新请求**，
+导致 httpx 的 ASGI transport 互相等待、测试超时。
+改为「两个独立客户端 + `asyncio.gather` 并发」后正常。
+
+> 教训：SSE 流会长时间占住一个连接。测试里不要在同一条流上嵌套请求，
+> 用独立客户端并发跑。
+
+---
+
+## 九、前端记录（2026-09-30）
+
+> 对应 Step 3。技术栈：**React 18 + TypeScript + Vite**。
+
+### 交付物
+
+```
+frontend/src/
+├─ api/types.ts                 前后端契约（事件 + Plan + Trace 的 TS 类型）
+├─ api/client.ts                HTTP + SSE 客户端（含游标续传与退避重连）
+├─ hooks/usePlanningSession.ts  状态机：提交 → 订阅 → 澄清 → 结果
+├─ components/
+│  ├─ TaskInput.tsx             输入框 + 示例任务
+│  ├─ ProgressFeed.tsx          实时进度流
+│  ├─ ClarificationCard.tsx     澄清提问与作答
+│  └─ PlanView.tsx              计划时间线（含依赖关系标注）
+├─ App.tsx
+├─ main.tsx
+└─ styles.css
+```
+
+构建产物输出到 `web/static/`（161 KB，gzip 后 JS 约 50 KB），由 FastAPI 直接托管 ——
+**生产环境只需一个进程，用户不需要 Node 环境**。
+
+### 三个非显然的实现决策
+
+**1. 事件流订阅写在用户操作里，不写在 `useEffect` 里**
+
+React 18 的 `StrictMode` 开发模式下会「挂载 → 卸载 → 再挂载」。
+把 `EventSource` 建在 effect 里会开出两条连接、事件重复 —— 这正是 Step 1 提前预警的坑。
+改成点击提交时才开流，StrictMode 不会重复执行，不需要 ref 守卫这类补丁。
+
+**2. SSE 断线重连必须自己管游标**
+
+浏览器原生 `EventSource` 自动重连时重发**同一个 URL**，
+而服务端的 `?cursor=N` 会过期，导致重复事件。
+因此关掉自动重连，自己记录已收到的条数、按退避策略重连并带上新游标；
+收到 `plan_ready` / `error` 即视为终态，不再重连。
+
+**3. 类型是契约，不是装饰**
+
+`types.ts` 里的 `PlanEvent` 是可辨识联合，`switch (event.type)` 时 `data` 自动收窄。
+后端若改字段，先改这个文件，TS 编译器会把所有受影响的渲染代码指出来，
+而不是等到运行时才发现某个字段是 `undefined`。
+
+### 真实浏览器验收（Chromium）
+
+不是「能编译」就算通过，用真实浏览器跑了完整用户流程：
+
+| 步骤 | 结果 |
+|---|---|
+| 打开页面 | ✅ React 正常渲染（标题、输入框、示例按钮） |
+| 输入任务并提交 | ✅ 成功建立会话 |
+| **实时进度** | ✅ 逐条出现 `→ 调用 get_weather_forecast` / `✓ 1464ms · 预算 1/12` |
+| 产出计划 | ✅ 3 阶段 13 步渲染完整，含工具/依赖/耗时/数据来源标签 |
+| **澄清流程** | ✅ 卡片出现（问题 + 原因 + 4 个可点选项） |
+| 提交答案后恢复 | ✅ 卡片消失、协程恢复、产出 3 阶段 16 步计划 |
+
+DOM 断言：`clarifyCardExists: false`、`planPanelExists: true`、
+`stepCount: 16`、`phaseCount: 3`。
+
+截图见 `docs/screenshots/`。
+
+### 构建与类型检查
+
+```bash
+cd frontend
+npm run typecheck      # tsc --noEmit → 通过
+npm run build          # → ../web/static/
+```
+
+`tsconfig.json` 开了 `strict` + `noUnusedLocals` + `noUncheckedIndexedAccess`，
+不是宽松配置。
+
+### 遗留
+
+- 前端没有单元测试（只有类型检查 + 真实浏览器验收）。若长期维护，
+  建议补 Vitest + React Testing Library 覆盖状态机分支。
+- 未做移动端适配（当前按桌面宽度设计）。
+- 未做 i18n（界面文案硬编码为中文）。
+
+---
+
+## 十、桌面版记录（2026-09-30）
+
+> 用 pywebview 把现有 Web 界面装进原生窗口。**不打包 exe**，自己用够了。
+
+### 交付物
+
+| 文件 | 说明 |
+|---|---|
+| `desktop/app.py` | 约 80 行的桌面入口 |
+| `start-desktop.bat` | 双击启动（**纯 ASCII 内容**，避免控制台代码页乱码） |
+| `pyproject.toml` | 新增 `task-planner-desktop` 入口 |
+
+新依赖：`pywebview 6.2.1`（Windows 后端带 `pythonnet`）。
+
+### 为什么只需要 80 行
+
+架构已经天然适合桌面化，三个条件全部满足：
+
+| 条件 | 状态 |
+|---|---|
+| 前端是静态产物，运行时不需要 Node | ✅ 构建到 `web/static/` |
+| 后端单进程同时提供 API + 静态文件 | ✅ FastAPI 挂载 StaticFiles |
+| **不依赖 MCP 子进程** | ✅ Web 层用 `LocalToolRunner` |
+
+所以桌面版 = 启动本地服务 + 开窗口指向它，**不复制任何业务逻辑**。
+
+### 三个实现要点
+
+**1. 端口从已绑定的 socket 读回，而不是「先探测再绑定」**
+
+```python
+config = uvicorn.Config(app, host="127.0.0.1", port=0, ...)   # 交给系统分配
+server = uvicorn.Server(config)
+threading.Thread(target=server.run, daemon=True).start()
+while not server.started: time.sleep(0.05)
+port = server.servers[0].sockets[0].getsockname()[1]          # 读回真实端口
+```
+
+「先探测空闲端口再绑定」两步之间有竞态窗口，可能被别的进程抢走。
+绑定 0 端口再读回则**完全没有竞态**。
+
+**2. uvicorn 必须跑在后台线程**
+
+pywebview 的窗口循环占用主线程，无法共存于同一线程。
+
+**3. 关窗即退出**
+
+```python
+try:
+    webview.start()
+finally:
+    server.should_exit = True    # 不写这句会留下占端口的僵尸进程
+```
+
+### 验收方式
+
+本环境的 **PowerShell 工具不返回任何输出**，无法用 `Get-Process MainWindowTitle`
+枚举窗口。改用 **ctypes 调 Win32 `EnumWindows`**：
+
+```python
+@ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+def cb(hwnd, _):
+    if user32.IsWindowVisible(hwnd):
+        n = user32.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(n + 1)
+        user32.GetWindowTextW(hwnd, buf, n + 1)
+        titles.append(buf.value)
+    return True
+```
+
+结果：
+
+| 检查项 | 结果 |
+|---|---|
+| 窗口存在 | ✅ 枚举到「任务规划助手」 |
+| 进程存活 | ✅ 154 MB（GUI 已加载） |
+| 内嵌服务 | ✅ `127.0.0.1:57046/api/health` 返回 200 |
+| 动态端口 | ✅ 每次启动不同（57046），无冲突 |
+| 退出清理 | ✅ 关窗后进程与端口均释放 |
+
+### 顺带发现的环境问题
+
+**`uv run` 会留僵尸进程** —— `TaskStop` 只杀掉 wrapper，
+`task-planner-web.exe` 会残留并占着端口和文件句柄，导致下次 `uv sync` 失败
+（`failed to remove file ... os error 32`）。需要手动清理：
+
+```bash
+taskkill //F //IM task-planner-web.exe
+```
+
+**PowerShell 工具在本环境无输出** —— 改用 Bash + `tasklist` / `netstat`。
+
+### 打包成 exe 的前置改造（未做）
+
+| 项 | 现状 | 打包后的问题 |
+|---|---|---|
+| `OUTPUT_DIR` | 默认 `"outputs"`（相对路径） | 双击启动时 CWD 不确定 → 落盘位置不可控 |
+| `attractions.db` | 建在 `PROJECT_ROOT` 下 | onefile 模式下写进临时解压目录，退出即删 |
+| API Key | 在 `.env` | 桌面用户不该编辑 `.env`，需设置界面存 `%APPDATA%` |
+
+**还有一个打包后才暴露的坑**：`MCPToolRunner` 用
+`sys.executable -m mcp_server.server` 启动子进程，打包后 `sys.executable` 是
+`app.exe`，这条命令会重启 GUI 而不是 MCP server。
+桌面版走 `LocalToolRunner` 用不到，但保留 CLI 的 MCP 模式时需要加分支处理。
+
+若要做可分发 exe，预估还需 4–6 天（其中 PyInstaller 打包调通占 2–3 天）。
+
+---
+
+## 十一、代码评审缺陷修复记录（2026-10-03）
+
+> 以「资深科研工程评审」视角通读全项目后，修复了评审确认的**高优先级缺陷**。
+> 所有缺陷都先用可执行脚本复现（不是「看起来像 bug」），再修，再补回归测试。
+
+### 测试增量
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 用例总数 | 225 | **275** |
+| 新增文件 | — | `tests/test_fixes.py`（43 例） |
+| `test_web.py` | 16 | 23 |
+
+### 一、功能性 Bug（7 个，全部已复现）
+
+**1. `fetch_webpage` 标题永远为空**
+
+- 根因：`head` 在 `SKIP_TAGS` 里，`handle_starttag("head")` 使跳过计数为 1；
+  `title` 在 `head` 内，`handle_data` 提前 return，标题文本被丢弃。
+- 现象：真实网页（都含 `<head>`）的 `title` 恒为 `"(无标题)"`。
+- 修复：`head` 移出跳过集；`title` 单独处理。
+- 验证：新增端到端测试 —— 起本地 HTTP 服务返回真实 HTML，断言标题正确解析。
+
+**2. 未闭合 `<script>` 吞掉整页正文**
+
+- 根因：跳过状态用**整数计数**而非栈，畸形 HTML 下永不归零。
+- 现象：正文从 `'标题\n正文段落'` 变成 `'标题'`。
+- 修复：改用栈；结束时若栈非空，在返回里加 `parse_warning` 标记。
+- 验证：`test_skip_stack_survives_malformed_html`、`test_unclosed_script_is_flagged`。
+
+**3. 空计划被判定为成功**
+
+- 根因：`Plan.phases` 默认空列表且无最少步骤校验，`ok` 只看能否解析。
+- 现象：`{"goal":"x","phases":[]}` → `ok=True, step_count=0`。
+- 修复：`Plan` 加 `model_validator`，要求至少 1 个步骤、`action` 非空。
+- 验证：`test_plan_without_steps_is_rejected`、`test_empty_plan_triggers_repair`。
+
+**4. 循环依赖的计划 `ok=True`**
+
+- 根因：`check_dag()` 失败只 `_log`，不参与 `ok` 判定。
+- 现象：含环的计划被判为成功，且**评测无法区分合法计划与有环计划**。
+- 修复：`PlanResult.ok = plan is not None and trace.dag_ok`；新增
+  `trace.dag_ok` / `dag_error` / `output_status`。
+- 验证：`test_cyclic_dependency_makes_result_not_ok`。
+
+**5. 重复 step id 被静默去重**
+
+- 根因：`{s.id: s for s in ...}` 后写覆盖前写，无唯一性校验。
+- 修复：`model_validator` 校验 id 全局唯一。
+- 验证：`test_duplicate_step_ids_are_rejected`。
+
+**6. 预算门控排在缓存之前**
+
+- 根因：`_execute` 先查预算再查缓存，与文档「命中缓存不消耗预算」矛盾。
+- 现象：预算耗尽后重复调用同一工具拿不到缓存数据，模型误判「数据缺失」。
+- 修复：交换顺序，缓存查找提前。
+- 验证：`test_cache_hit_works_after_budget_exhausted`。
+
+**7. 预算拒绝的调用不记入 trace**
+
+- 根因：预算分支直接 return，不 append `ToolCallRecord`。
+- 现象：模型请求 2 次、trace 只记 1 条 → **所有基于 trace 的指标系统性偏低**。
+- 修复：新增 `ERR_BUDGET_EXCEEDED`，拒绝时也记录。
+- 验证：`test_budget_rejection_is_recorded_in_trace`。
+
+### 二、鲁棒性缺陷
+
+| 缺陷 | 修复 |
+|---|---|
+| `run_stream` 无异常兜底，LLM 报错裸抛 | 包 try/except，产出 `error` 事件 + 失败结果；`stop_reason="runtime_error"` |
+| CLI 无异常兜底 | 顶层 try/except + `_error_hint()` 把常见异常翻译成排查提示 |
+| LLM 无超时（SDK 默认 600s） | 新增 `LLM_TIMEOUT`（默认 60s）、`LLM_MAX_RETRIES` |
+| `choices[0]` 未检查空 | 空列表时抛带说明的 `RuntimeError` |
+| `finish_reason="length"` 被忽略 | 产出 `warning` 事件，避免无效的修复重试 |
+| `max_turns` 耗尽 + `final_text` 空 → 跳过修复 | 去掉 `and final_text` 条件；新增 `_repair_instruction()` 分情况给指令 |
+| `max_turns=0/-1` 静默接受 | `_env_int(minimum=1)` 校验；编排循环里显式兜底为 1 |
+| 澄清无超时 | `asyncio.wait_for`，10 分钟超时后降级为「按假设继续」 |
+| 前端 `fetch` 无超时 | `AbortSignal.timeout(15s)` + 超时/断网分别给提示 |
+| 前端 `answer()` 静默失败 | 改为 dispatch 错误，用户能看到反馈 |
+
+### 三、安全缺陷
+
+**SSRF（`fetch_webpage` 可抓内网 / 云元数据）**
+
+- 修复三层：
+  1. `host_is_blocked()` —— 拒绝 localhost / 私有网段 / link-local / 保留地址，
+     且**在 DNS 解析之后**校验（防 `evil.example` 解析到 127.0.0.1）
+  2. 手动跟随重定向，**每跳重新校验**（防 302 到内网）
+  3. 流式读取 + 5MB 上限（防大文件打爆内存）
+- 验证：参数化测试覆盖 10 种内网地址；`ALLOW_PRIVATE_URLS=1` 仅用于本地测试。
+- **残余风险**：若环境配置了 `HTTP_PROXY`，代理可能把公网域名解析到内网 ——
+  这属于代理的信任边界，已在文档注明。
+
+**限流在反代后失效**
+
+- `request.client.host` 在反向代理后是代理 IP，所有人算一个。
+- 修复：新增 `WEB_TRUST_PROXY`，开启时按 `X-Forwarded-For` 第一跳限流。
+  **默认关闭**（XFF 可伪造）。
+
+### 四、工程与实验完整性
+
+| 缺陷 | 修复 |
+|---|---|
+| `Settings.tool_timeout/tool_retries` 是死字段 | 用 `contextvars` 注入：编排循环 `with tool_settings(...)` 包住工具调用 |
+| `temperature=0.2` 硬编码 | 改为 `LLM_TEMPERATURE` 配置 |
+| `trace.turns` 含修复重试，语义不一致 | 修复不再累加 `turns` |
+| `stop_reason` 被覆盖，无法作判据 | 拆成 `stop_reason`（怎么结束）+ `output_status`（产出可用性） |
+| 工具描述过时（写 12 城，实际 42 城） | `_coverage_note()` 从数据库实时生成 + 测试断言一致性 |
+| `max_price` 描述说「元」但比较当地货币 | 描述改为「**当地货币，不是人民币**」+ 测试断言 |
+| 会话 TTL 回收不取消后台协程 | `SessionStore.on_evict` 钩子；`app.py` 注入取消逻辑 |
+| 服务空闲时 TTL 不生效 | 新增 `_janitor_loop` 后台清理任务 |
+| `check_dag` 递归可能栈溢出 | 改迭代式 DFS，1500 步链式依赖测试通过 |
+| `covered` 每次查询都算（成功路径也用不到） | 移到失败路径 |
+
+### 五、修复后验证
+
+| 检查项 | 结果 |
+|---|---|
+| 后端测试 | ✅ 275 passed |
+| 前端类型检查 | ✅ `tsc --noEmit` 通过 |
+| 前端构建 | ✅ 154 KB（gzip 50 KB） |
+| 真实 DeepSeek 端到端 | ✅ `停止=model_finished 输出=ok`，12,676 token |
+| SSRF 拦截 | ✅ 169.254.169.254 / 127.0.0.1 / localhost 全部拒绝 |
+| 正常公网抓取 | ⚠️ 本机环境 `HTTP_PROXY` 返回 502，改用本地 mock 服务做端到端验证 |
+
+### 六、未修的（下一批）
+
+评审中的以下项**未在本次修复**，属于新增功能而非缺陷：
+
+- 运行记录持久化（`logs/runs.jsonl` + 汇总脚本）—— 实验迭代的度量基础
+- 全局 token / 成本熔断
+- `messages` 上下文裁剪
+- 结构化日志（`_logging` 替代 `print`）
+- 前端单元测试（Vitest + RTL）

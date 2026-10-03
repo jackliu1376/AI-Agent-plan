@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from common.envelope import ERR_BAD_ARGS, ERR_NOT_FOUND, ERR_UPSTREAM_ERROR, ToolResult
 from mcp_server.data.cities import index_size, lookup_city
-from mcp_server.tools.base import env_int, register
+from mcp_server.tools.base import register, tool_timeout
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -79,7 +79,7 @@ class WeatherParams(BaseModel):
 
 def _fetch_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
     """薄封装：便于测试注入假响应。"""
-    timeout = env_int("TOOL_TIMEOUT", 10)
+    timeout = tool_timeout()
     with httpx.Client(timeout=timeout) as client:
         resp = client.get(url, params=params)
         resp.raise_for_status()

@@ -10,7 +10,7 @@ import httpx
 from pydantic import BaseModel, Field, field_validator
 
 from common.envelope import ERR_BAD_ARGS, ToolResult
-from mcp_server.tools.base import env, env_int, register
+from mcp_server.tools.base import env, register, tool_timeout
 
 # 离线兜底汇率（以 CNY 为基准，1 单位外币 = ? CNY）—— 教学用近似值
 FALLBACK_TO_CNY: dict[str, float] = {
@@ -51,7 +51,7 @@ def _fetch_rates(base: str) -> tuple[dict[str, float] | None, str]:
     if not url:
         return None, "未配置汇率 API"
     try:
-        timeout = env_int("TOOL_TIMEOUT", 10)
+        timeout = tool_timeout()
         with httpx.Client(timeout=timeout) as client:
             resp = client.get(f"{url.rstrip('/')}/{base}")
             resp.raise_for_status()

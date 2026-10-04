@@ -254,12 +254,14 @@ def invoke(name: str, args: dict[str, Any] | None = None, *, retries: int | None
 def load_all_tools() -> dict[str, ToolSpec]:
     """导入所有工具模块，触发注册。返回注册表。"""
     from mcp_server.tools import (  # noqa: F401  仅为了触发副作用注册
+        attraction_live,
         attractions,
         budget,
         clarify,
         currency,
         route,
         storage,
+        transit,
         weather,
         web,
     )

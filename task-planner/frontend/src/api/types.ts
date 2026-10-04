@@ -125,6 +125,10 @@ export interface Plan {
   risks: Risk[]
   total_eta: string
   budget_estimate: string
+  /** 数据时效声明：票价/开放时间/评分等时效性数据的核对时间与变动提示 */
+  data_freshness: string
+  /** 用户可自行核实信息的官方渠道（不编造网址，只给渠道类型） */
+  verification_channels: string[]
 }
 
 // ---------------------------------------------------------------------------

@@ -67,6 +67,16 @@ class Risk(BaseModel):
     mitigation: str
 
 
+# 会产出「会过期」的数据的工具。
+# 计划里引用了其中任何一个，就必须交代数据时效与核实渠道（见 Plan._validate_freshness）。
+FRESHNESS_TOOLS: frozenset[str] = frozenset(
+    {
+        "query_attractions_db",  # 票价 / 开放时间 / 评分
+        "get_weather_forecast",  # 天气预报
+    }
+)
+
+
 class Plan(BaseModel):
     """任务规划助手的最终产出。"""
 
@@ -77,6 +87,34 @@ class Plan(BaseModel):
     risks: list[Risk] = Field(default_factory=list)
     total_eta: str = ""
     budget_estimate: str = ""
+
+    # -- 数据时效与核实渠道 -----------------------------------------------
+    #
+    # 这两项是本项目对「数据可信度」的核心交代：种子库里的票价 / 开放时间 /
+    # 评分是演示数据，计划里不说明的话，用户会误以为它们是实时的。
+    #
+    # 做成 **schema 字段 + 条件校验**，而不是只靠提示词约束 ——
+    # 提示词可能被忽略，schema 校验不会。
+    #
+    # 「条件」很关键：只有引用了时效性数据源（景点库 / 天气）时才强制要求。
+    # 无条件强制会让「帮我把毕业论文写完」这类非事实性任务也被迫编一句
+    # 时效声明，反而制造噪音。
+
+    data_freshness: str = Field(
+        default="",
+        description=(
+            "数据时效声明：说明计划中事实性数据（票价、开放时间、评分、天气）"
+            "的核对时间与可能变动，需写明核对月份。"
+        ),
+    )
+    verification_channels: list[str] = Field(
+        default_factory=list,
+        description=(
+            "建议用户自行核实信息的官方渠道，至少 1 条。"
+            "例如「景区官方微信公众号 / 官方小程序」「景点官网」。"
+            "不要编造具体网址，除非工具返回中确实提供了。"
+        ),
+    )
 
     # -- 结构校验 ---------------------------------------------------------
     #
@@ -110,6 +148,33 @@ class Plan(BaseModel):
         if blank:
             raise ValueError(f"以下步骤的 action 为空：{blank}")
 
+        return self
+
+    @model_validator(mode="after")
+    def _validate_freshness(self) -> "Plan":
+        """引用了时效性数据源时，必须交代数据时效与核实渠道。
+
+        触发条件是「计划里真的用到了会过期的数据」，而不是「任务是不是旅游」——
+        这样非事实性任务（写论文、做预算表）不会被强加一条无意义的声明。
+        """
+        used = self.referenced_tools()
+        needs = used & FRESHNESS_TOOLS
+        if not needs:
+            return self
+
+        sources = "、".join(sorted(needs))
+        if not self.data_freshness.strip():
+            raise ValueError(
+                f"计划引用了时效性数据源（{sources}），因此 data_freshness 不能为空。"
+                "请说明这些数据的核对时间（如「票价为 2026-10 核对的演示数据」）"
+                "以及可能存在的变动。"
+            )
+        if not self.verification_channels:
+            raise ValueError(
+                f"计划引用了时效性数据源（{sources}），因此 verification_channels 不能为空。"
+                "请至少给出 1 条用户可自行核实的官方渠道"
+                "（如「景区官方微信公众号 / 小程序」「景点官网」）。"
+            )
         return self
 
     # -- 派生校验 ---------------------------------------------------------

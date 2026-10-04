@@ -581,3 +581,125 @@ def test_max_price_description_warns_about_currency() -> None:
     field = AttractionsParams.model_fields["max_price"]
     assert field.description is not None
     assert "当地货币" in field.description
+
+
+# ===========================================================================
+# 数据时效标注（第 1 层）+ 官方核实渠道（第 2 层）
+# ===========================================================================
+
+
+def test_every_seed_row_has_verified_at() -> None:
+    """时效性字段必须带核对时间 —— 否则用户无法判断数据有多旧。"""
+    from mcp_server.data.seed import COLUMNS, DATA_VERIFIED_AT, SEED_ROWS
+
+    idx = COLUMNS.index("verified_at")
+    for row in SEED_ROWS:
+        assert row[idx], f"缺少 verified_at: {row}"
+        assert row[idx] == DATA_VERIFIED_AT
+
+
+def test_tool_returns_freshness_metadata(fake_weather) -> None:
+    """工具必须把时效信息交给模型，否则模型无从转述。"""
+    result = invoke("query_attractions_db", {"city": "成都", "limit": 2})
+
+    assert result.ok, result.error.message if not result.ok else ""
+    data = result.data
+    assert data["data_verified_at"]
+    assert "核对的演示数据" in data["freshness_note"]
+    assert data["official_channel"]
+    # 每条记录也要带核对时间
+    assert all(item["verified_at"] == data["data_verified_at"] for item in data["items"])
+
+
+def test_official_channel_differs_for_domestic_and_international() -> None:
+    from mcp_server.tools.attractions import official_channel_for
+
+    cn = official_channel_for("成都", "中国")
+    intl = official_channel_for("东京", "日本")
+
+    assert "微信" in cn, "国内景区售票预约主要走微信渠道"
+    assert "官网" in intl
+    assert cn != intl
+
+
+def test_official_channel_has_no_fabricated_urls() -> None:
+    """渠道字段只描述渠道类型，不写具体网址 —— 编造网址正是本项目要避免的。"""
+    from mcp_server.tools.attractions import CHANNEL_CN, CHANNEL_INTL
+
+    for text in (CHANNEL_CN, CHANNEL_INTL):
+        assert "http" not in text
+        assert "www." not in text
+
+
+# -- schema 层：引用了时效性数据源就必须交代 ------------------------------
+
+
+def test_plan_using_attractions_requires_freshness() -> None:
+    plan = make_plan(data_freshness="", verification_channels=["某渠道"])
+    plan["phases"] = [
+        {"name": "P", "steps": [{"id": "S1", "action": "查景点", "tool": "query_attractions_db"}]}
+    ]
+    with pytest.raises(ValueError, match="data_freshness 不能为空"):
+        Plan.model_validate(plan)
+
+
+def test_plan_using_weather_requires_verification_channels() -> None:
+    plan = make_plan(data_freshness="天气为实时预报", verification_channels=[])
+    with pytest.raises(ValueError, match="verification_channels 不能为空"):
+        Plan.model_validate(plan)
+
+
+def test_plan_without_freshness_tools_needs_no_declaration() -> None:
+    """纯流程类任务（写论文）不该被强加一句无意义的时效声明。"""
+    plan = make_plan(data_freshness="", verification_channels=[])
+    plan["phases"] = [
+        {
+            "name": "P",
+            "steps": [
+                {"id": "S1", "action": "列提纲", "tool": None, "tool_args": {}},
+                {"id": "S2", "action": "写初稿", "tool": None, "tool_args": {}},
+            ],
+        }
+    ]
+    parsed = Plan.model_validate(plan)
+    assert parsed.data_freshness == ""
+    assert parsed.verification_channels == []
+
+
+def test_missing_freshness_triggers_repair(settings: Settings, fake_weather, runner) -> None:
+    """缺时效声明 → 校验失败 → 修复重试 → 拿到合规计划。"""
+    bad = make_plan(data_freshness="")
+    llm = ScriptedLLM(
+        [
+            tool_turn(("c1", "query_attractions_db", {"city": "成都"})),
+            plan_turn(bad),
+            plan_turn(make_plan()),
+        ]
+    )
+    result = Orchestrator(llm, runner, settings).run("成都景点")
+
+    assert result.trace.repairs == 1
+    assert result.ok is True
+    assert result.plan is not None
+    assert result.plan.data_freshness
+
+
+def test_freshness_reaches_event_payload(settings: Settings, fake_weather, runner) -> None:
+    """时效信息要能传到前端（SSE 事件里必须带上）。"""
+    llm = ScriptedLLM([plan_turn(make_plan())])
+    result = Orchestrator(llm, runner, settings).run("成都景点")
+
+    payload = result.to_event_data()
+    assert payload["plan"]["data_freshness"]
+    assert payload["plan"]["verification_channels"]
+
+
+def test_coverage_note_does_not_hardcode_city_count() -> None:
+    """种子库文档/描述里不该再出现写死的城市数字（曾因此漂移过两次）。"""
+    from mcp_server.tools.attractions import _coverage_note
+
+    note = _coverage_note()
+    # 描述里的数字必须等于实际城市数
+    from mcp_server.data.seed import covered_cities
+
+    assert f"{len(covered_cities())} 个城市" in note

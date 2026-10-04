@@ -15,6 +15,8 @@ dependencies = [
     "fastapi>=0.142.2",
     "uvicorn[standard]>=0.54.0",
     "pywebview>=6.2.1",
+    # 评测样本集用 YAML（需要注释说明每条样本的意图，JSON 做不到）
+    "pyyaml>=6.0.1",
 ]
 
 [project.scripts]
@@ -22,6 +24,8 @@ task-planner = "agent.cli:main"
 task-planner-server = "mcp_server.server:main"
 task-planner-web = "web.serve:main"
 task-planner-desktop = "desktop.app:main"
+task-planner-report = "agent.run_report:main"
+task-planner-eval = "agent.eval_runner:main"
 
 [dependency-groups]
 dev = [

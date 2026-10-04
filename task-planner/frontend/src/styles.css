@@ -366,6 +366,43 @@ body {
   color: var(--warning);
 }
 
+/* 数据时效声明：用中性底色 + 左侧色条，与「仍需澄清」的警示色区分开 */
+.freshness {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface-2);
+  font-size: 13px;
+}
+
+.freshness h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.freshness p {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+}
+
+.freshness-label {
+  color: var(--text-faint);
+  margin-bottom: 4px;
+}
+
+.freshness ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+}
+
+.freshness li {
+  margin-bottom: 3px;
+}
+
 .phase {
   border-bottom: 1px solid var(--border);
 }

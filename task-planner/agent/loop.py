@@ -37,6 +37,7 @@ import asyncio
 import inspect
 import json
 import re
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -148,6 +149,9 @@ class LoopTrace:
     dag_ok: bool = False
     dag_error: str = ""
     error: str = ""
+    # 墙钟耗时（毫秒）。评测时"快不快"和"对不对"同样重要。
+    started_at: float = 0.0
+    duration_ms: int = 0
 
     @property
     def failed_calls(self) -> list[ToolCallRecord]:
@@ -170,6 +174,7 @@ class LoopTrace:
             "dag_ok": self.dag_ok,
             "dag_error": self.dag_error,
             "error": self.error,
+            "duration_ms": self.duration_ms,
             "tools_used": self.tools_used(),
             "tool_calls": [c.__dict__ for c in self.tool_calls],
             "usage": self.usage,
@@ -304,6 +309,7 @@ class Orchestrator:
         """
         self._last_result = None
         trace = LoopTrace(budget=self.settings.tool_budget)
+        trace.started_at = time.time()
         trace.injection_flags = detect_injection(user_input)
         if trace.injection_flags:
             self._log(f"⚠️ 检测到疑似提示注入特征 x{len(trace.injection_flags)}")
@@ -449,6 +455,8 @@ class Orchestrator:
             trace.output_status = "invalid_dag"
         else:
             trace.output_status = "ok"
+
+        trace.duration_ms = int((time.time() - trace.started_at) * 1000)
 
         self._last_result = PlanResult(
             ok=plan is not None and trace.dag_ok,

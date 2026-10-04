@@ -79,6 +79,25 @@ export function PlanView({ plan, markdown, stepCount }: Props) {
         <h3>{plan.goal}</h3>
       </div>
 
+      {/* 数据时效：把「这个数字有多新」摆在显眼位置。
+          数据旧不可怕，用户不知道它旧才可怕。 */}
+      {(plan.data_freshness.length > 0 || plan.verification_channels.length > 0) && (
+        <div className="freshness">
+          <h4>数据时效</h4>
+          {plan.data_freshness.length > 0 && <p>{plan.data_freshness}</p>}
+          {plan.verification_channels.length > 0 && (
+            <>
+              <div className="freshness-label">出行前建议核实：</div>
+              <ul>
+                {plan.verification_channels.map((channel, i) => (
+                  <li key={i}>{channel}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
+
       {plan.assumptions.length > 0 && (
         <div className="notes">
           <h4>假设</h4>

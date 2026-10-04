@@ -17,13 +17,15 @@ EXPECTED = {
     "parse_budget_csv",
     "convert_currency",
     "estimate_route",
+    "query_transit_options",
+    "query_attraction_realtime",
     "save_itinerary",
     "ask_user_clarification",
 }
 
 
 async def test_mcp_server_exposes_all_tools() -> None:
-    """通过 MCP 协议 list_tools，应拿到 8 个工具。"""
+    """通过 MCP 协议 list_tools，应拿到全部工具。"""
     async with MCPToolRunner() as runner:
         names = await runner.list_remote_tools()
     assert set(names) == EXPECTED

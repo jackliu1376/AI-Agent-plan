@@ -2,6 +2,13 @@
 
 按城市 + 标签 + 人均价格上限筛选，返回结构化景点列表。
 这是与「天气 API」功能互异的第二个技能（本地数据库查询）。
+
+时效性
+------
+``price`` / ``open_hours`` / ``rating`` 是**时效性数据**：票价会调整、
+开放时间会变更、景点会歇业。每条记录带 ``verified_at``（人工核对月份），
+返回值里还有 ``freshness_note``，Agent 必须把它转述进计划 ——
+让用户知道"这个数字有多新"，而不是默认它是实时的。
 """
 
 from __future__ import annotations
@@ -11,8 +18,31 @@ import sqlite3
 from pydantic import BaseModel, Field, field_validator
 
 from common.envelope import ERR_NOT_FOUND, ToolResult
-from mcp_server.data.seed import connect
+from mcp_server.data.seed import connect, data_verified_at, freshness_disclaimer
 from mcp_server.tools.base import register
+
+# 官方查询渠道：**刻意返回渠道类型而非具体网址**。
+#
+# 理由：
+# 1. 网址会失效，渠道类型不会；
+# 2. 我们无法逐一核实几百个景点的官网 —— 而**编造网址正是本项目要避免的事**；
+# 3. 国内景区售票与预约绝大多数走官方微信公众号 / 小程序，这个指引是准确且可执行的。
+#
+# 若某个城市确有稳定的官方统一平台，在此覆盖。只写有把握的，宁可少不可错。
+CHANNEL_OVERRIDES: dict[str, str] = {}
+
+CHANNEL_CN = "景区官方微信公众号 / 官方小程序（微信搜索景区名），或景区官网"
+CHANNEL_INTL = "景点官网（official website）或官方票务渠道"
+
+
+def official_channel_for(city: str, country: str) -> str:
+    """给出该地景点的官方核实渠道。"""
+    override = CHANNEL_OVERRIDES.get(city)
+    if override:
+        return override
+    if country.startswith("中国"):
+        return CHANNEL_CN
+    return CHANNEL_INTL
 
 
 class AttractionsParams(BaseModel):
@@ -82,6 +112,8 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         "kid_friendly": bool(row["kid_friendly"]),
         "open_hours": row["open_hours"],
         "note": row["note"],
+        # 时效性标注：让模型知道这个数字是什么时候核对的
+        "verified_at": row["verified_at"],
     }
 
 
@@ -93,6 +125,8 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         + _coverage_note()
         + "注意：价格是**当地货币**，由 currency 字段标注；如需折算成人民币请再调用 convert_currency。"
         "数据为本地离线库，不需要网络。"
+        "**price / open_hours / rating 为时效性数据**：每条记录带 verified_at（人工核对月份），"
+        "引用这些字段时必须在计划中转述核对时间，并提示用户出行前通过官方渠道复核。"
     ),
     params_model=AttractionsParams,
     idempotent=True,
@@ -143,10 +177,11 @@ def query_attractions_db(params: AttractionsParams) -> ToolResult:
         cur = item["currency"]
         totals[cur] = round(totals.get(cur, 0.0) + item["price"], 2)
 
+    country = items[0]["country"]
     return ToolResult.success(
         {
             "city": params.city,
-            "country": items[0]["country"],
+            "country": country,
             "currency": items[0]["currency"],
             "count": len(items),
             "items": items,
@@ -155,6 +190,10 @@ def query_attractions_db(params: AttractionsParams) -> ToolResult:
             "note": (
                 "价格为当地货币。若需人民币口径，请对 totals_by_currency 调用 convert_currency 换算。"
             ),
+            # -- 时效性声明（必须转述进计划）----------------------------------
+            "data_verified_at": data_verified_at(),
+            "freshness_note": freshness_disclaimer(),
+            "official_channel": official_channel_for(params.city, country),
         },
         source="local:attractions.db",
     )

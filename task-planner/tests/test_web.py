@@ -127,7 +127,7 @@ async def test_list_tools(make_app, client_factory) -> None:
     resp = await client.get("/api/tools")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["count"] == 8
+    assert body["count"] == 10
     names = {t["name"] for t in body["tools"]}
     assert "get_weather_forecast" in names
     assert "query_attractions_db" in names
@@ -487,3 +487,65 @@ def test_client_key_falls_back_when_no_client() -> None:
         client = None
 
     assert _client_key(_Req(), trust_proxy=False) == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# 运行记录：Web 层也要落盘
+# ---------------------------------------------------------------------------
+
+
+async def test_web_run_writes_run_log(
+    make_app,
+    client_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    run_log_path,
+) -> None:
+    """Web 层跑完必须写运行记录，且 source 标记为 web。"""
+    from agent.run_log import load_runs
+
+    monkeypatch.setenv("RUN_LOG_ENABLED", "1")
+    monkeypatch.setenv("RUN_LOG_PATH", str(run_log_path))
+
+    client = client_factory(make_app(normal_script))
+    sid = (await client.post("/api/sessions", json={"task": "成都 2 日游"})).json()["session_id"]
+    await collect_sse(client, f"/api/sessions/{sid}/events", stop_at={"plan_ready"})
+
+    records = load_runs(run_log_path)
+    assert len(records) == 1, "Web 层没有写入运行记录"
+    record = records[0]
+    assert record["source"] == "web"
+    assert record["task"] == "成都 2 日游"
+    assert record["ok"] is True
+    assert record["step_count"] > 0
+
+
+async def test_web_failed_run_is_also_logged(
+    make_app,
+    client_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    run_log_path,
+) -> None:
+    """失败样本才是排查重点，必须一并记录。"""
+    from agent.run_log import load_runs
+
+    monkeypatch.setenv("RUN_LOG_ENABLED", "1")
+    monkeypatch.setenv("RUN_LOG_PATH", str(run_log_path))
+
+    class ExplodingLLM:
+        def chat(self, messages, tools=None):  # noqa: ANN001
+            raise RuntimeError("上游炸了")
+
+    client = client_factory(make_app(normal_script, llm_wrapper=lambda _: ExplodingLLM()))
+    sid = (await client.post("/api/sessions", json={"task": "成都 2 日游"})).json()["session_id"]
+
+    for _ in range(200):
+        view = (await client.get(f"/api/sessions/{sid}")).json()
+        if view["status"] in ("done", "failed"):
+            break
+        await asyncio.sleep(0.02)
+
+    records = load_runs(run_log_path)
+    assert len(records) == 1
+    assert records[0]["ok"] is False
+    assert records[0]["output_status"] == "runtime_error"
+    assert "上游炸了" in records[0]["error"]

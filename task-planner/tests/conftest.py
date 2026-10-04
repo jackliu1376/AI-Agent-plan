@@ -17,6 +17,37 @@ from agent.tool_runner import LocalToolRunner
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _isolate_run_log(monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> None:
+    """测试默认不写运行记录，避免污染仓库里的 logs/runs.jsonl。
+
+    想验证记录逻辑的测试，用 ``run_log_path`` fixture 显式指定路径
+    （``record_run(path=...)`` 会绕过启用开关）。
+    """
+    monkeypatch.setenv("RUN_LOG_ENABLED", "0")
+    monkeypatch.delenv("RUN_LABEL", raising=False)
+    monkeypatch.setenv(
+        "RUN_LOG_PATH", str(tmp_path_factory.mktemp("runlog") / "runs.jsonl")
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_amap_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试默认**不带**高德 Key。
+
+    否则同一份代码在不同开发者的机器上跑出不同结果 ——
+    配了 Key 的走实时路线、没配的走离线估算，断言会随 ``.env`` 飘。
+    需要 Key 的测试用 ``fake_amap``（自动设置）或显式 ``setenv``。
+    """
+    monkeypatch.delenv("AMAP_API_KEY", raising=False)
+
+
+@pytest.fixture
+def run_log_path(tmp_path: Path) -> Path:
+    """显式可用的运行记录路径（配合 ``record_run(path=...)``）。"""
+    return tmp_path / "runs.jsonl"
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     """测试用配置：不依赖真实 API Key。"""
@@ -81,6 +112,89 @@ def fake_weather(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
 
     monkeypatch.setattr(weather_mod, "_fetch_json", _fake_fetch)
     return counters
+
+
+# ---------------------------------------------------------------------------
+# 假高德驾车 API
+# ---------------------------------------------------------------------------
+
+AMAP_OK_PAYLOAD: dict[str, Any] = {
+    "status": "1",
+    "info": "OK",
+    "infocode": "10000",
+    "count": "1",
+    "route": {
+        "paths": [
+            {
+                "distance": "1950000",  # 米 → 1950 km
+                "duration": "72000",  # 秒 → 20 h
+                "tolls": "850",
+            }
+        ]
+    },
+}
+
+
+class FakeAmapClient:
+    """替身 httpx.Client：只实现 amap_driving 用到的那几个方法。"""
+
+    def __init__(self, payload: Any = None, exc: Exception | None = None) -> None:
+        self._payload = payload if payload is not None else AMAP_OK_PAYLOAD
+        self._exc = exc
+        self.calls: list[dict[str, Any]] = []
+
+    def __enter__(self) -> "FakeAmapClient":
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+    def get(self, url: str, params: dict[str, Any] | None = None):  # noqa: ANN201
+        self.calls.append({"url": url, "params": params or {}})
+        if self._exc is not None:
+            raise self._exc
+
+        import httpx
+
+        payload = self._payload
+
+        class _Resp:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> Any:
+                if isinstance(payload, str):
+                    raise ValueError("not json")
+                return payload
+
+        return _Resp()
+
+
+@pytest.fixture
+def fake_amap(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """走通「高德实时路线」路径：配置 key 并替换 amap_driving。"""
+    import mcp_server.tools.route as route_mod
+
+    monkeypatch.setenv("AMAP_API_KEY", "test-amap-key")
+    counters = {"calls": 0}
+
+    def _fake(
+        origin_lonlat: tuple[float, float],
+        dest_lonlat: tuple[float, float],
+        *,
+        timeout: int | None = None,
+    ) -> tuple[dict[str, float] | None, str]:
+        counters["calls"] += 1
+        return {"distance_km": 1950.0, "duration_hours": 20.0, "tolls": 850.0}, ""
+
+    monkeypatch.setattr(route_mod, "amap_driving", _fake)
+    return counters
+
+
+@pytest.fixture
+def no_amap_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """确保未配置高德 key，用于验证降级行为。"""
+    monkeypatch.delenv("AMAP_API_KEY", raising=False)
 
 
 @pytest.fixture
@@ -165,6 +279,8 @@ def make_plan(
     risks: list[dict[str, str]] | None = None,
     total_eta: str = "2 天",
     budget_estimate: str = "¥1000",
+    data_freshness: str = "天气为实时预报；票价/开放时间为 2026-10 核对的演示数据",
+    verification_channels: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "goal": goal,
@@ -213,4 +329,11 @@ def make_plan(
         "risks": risks or [{"risk": "天气变化", "mitigation": "备选室内方案"}],
         "total_eta": total_eta,
         "budget_estimate": budget_estimate,
+        # 默认计划引用了 get_weather_forecast，因此必须交代时效与核实渠道
+        "data_freshness": data_freshness,
+        "verification_channels": (
+            verification_channels
+            if verification_channels is not None
+            else ["景区官方微信公众号 / 官方小程序"]
+        ),
     }

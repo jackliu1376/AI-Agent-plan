@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from common.envelope import (
     ToolResult,
 )
 from mcp_server.tools.base import TOOL_REGISTRY, invoke, load_all_tools, openai_tool_schemas
+from mcp_server.tools.route import CALIBRATION
 
 EXPECTED_TOOLS = {
     "get_weather_forecast",
@@ -27,6 +29,8 @@ EXPECTED_TOOLS = {
     "parse_budget_csv",
     "convert_currency",
     "estimate_route",
+    "query_transit_options",
+    "query_attraction_realtime",
     "save_itinerary",
     "ask_user_clarification",
 }
@@ -42,7 +46,7 @@ def _load() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_registry_exposes_eight_distinct_tools() -> None:
+def test_registry_exposes_all_distinct_tools() -> None:
     """BYOA 要求 ≥2 个功能互异技能，这里实际提供 8 个。"""
     assert set(TOOL_REGISTRY) == EXPECTED_TOOLS
     assert len(TOOL_REGISTRY) >= 2
@@ -247,6 +251,428 @@ def test_estimate_route_unknown_city() -> None:
     result = invoke("estimate_route", {"origin": "霍格沃茨", "destination": "成都"})
     assert not result.ok
     assert result.error.code == ERR_NOT_FOUND
+
+
+def test_route_error_guides_scenic_spot_handling() -> None:
+    """景区级目的地无法解析时，错误信息必须给出可执行的降级路径。
+
+    这是评测跑出来的真实缺口：模型会自然地想规划到「都江堰」「青城山」
+    这类景区（它们在景点库里有，但不在城市索引里）。
+    错误信息若只说「无法解析」，模型只能摆烂或编造距离。
+    """
+    result = invoke("estimate_route", {"origin": "成都", "destination": "都江堰"})
+
+    assert not result.ok
+    assert result.error.code == ERR_NOT_FOUND
+
+    message = result.error.message
+    assert "景区" in message, "要说明失败原因（不含景区/区县）"
+    assert "最近的城市" in message, "要给出降级做法"
+    assert "不要编造" in message, "要明确禁止编造"
+
+
+# ---------------------------------------------------------------------------
+# 高铁估算精度：用真实线路数据做回归
+# ---------------------------------------------------------------------------
+#
+# 这组测试是「模型调参不许调坏」的守门人。参数在 mcp_server/tools/route.py
+# 的 HSR_BANDS 里；改完跑这里就知道有没有退步。
+#
+# 注意口径：CALIBRATION 里的车程是**纯车程**（12306 显示的运行时长），
+# 必须与输出里的 in_vehicle_hours 比，不能与 duration_hours（门到门）比 ——
+# 早期就是因为混用这两个口径，得出了"误差 140%"的错误结论。
+
+
+@pytest.mark.parametrize(
+    ("origin", "dest", "straight", "rail_km", "hours", "fare"),
+    CALIBRATION,
+)
+def test_route_distance_within_tolerance(
+    origin: str, dest: str, straight: float, rail_km: float, hours: float, fare: float
+) -> None:
+    """铁路里程误差必须 ≤ 8%（当前实测 ≤4%）。"""
+    data = invoke("estimate_route", {"origin": origin, "destination": dest, "mode": "hsr"}).data
+    error = abs(data["distance_km"] / rail_km - 1)
+    assert error <= 0.08, f"{origin}→{dest} 里程误差 {error:.1%}"
+
+
+@pytest.mark.parametrize(
+    ("origin", "dest", "straight", "rail_km", "hours", "fare"),
+    CALIBRATION,
+)
+def test_route_duration_within_tolerance(
+    origin: str, dest: str, straight: float, rail_km: float, hours: float, fare: float
+) -> None:
+    """车程点估计误差必须 ≤ 25%（当前实测 ≤22%）。"""
+    data = invoke("estimate_route", {"origin": origin, "destination": dest, "mode": "hsr"}).data
+    error = abs(data["in_vehicle_hours"] / hours - 1)
+    assert error <= 0.25, f"{origin}→{dest} 车程误差 {error:.1%}"
+
+
+@pytest.mark.parametrize(
+    ("origin", "dest", "straight", "rail_km", "hours", "fare"),
+    CALIBRATION,
+)
+def test_route_cost_within_tolerance(
+    origin: str, dest: str, straight: float, rail_km: float, hours: float, fare: float
+) -> None:
+    """票价点估计误差必须 ≤ 18%（当前实测 ≤13%）。"""
+    data = invoke("estimate_route", {"origin": origin, "destination": dest, "mode": "hsr"}).data
+    error = abs(data["estimated_cost"] / fare - 1)
+    assert error <= 0.18, f"{origin}→{dest} 费用误差 {error:.1%}"
+
+
+@pytest.mark.parametrize(
+    ("origin", "dest", "straight", "rail_km", "hours", "fare"),
+    CALIBRATION,
+)
+def test_route_range_covers_actual(
+    origin: str, dest: str, straight: float, rail_km: float, hours: float, fare: float
+) -> None:
+    """**最关键的一条**：真实值必须落在给出的区间内。
+
+    点估计受线路标准影响做不到很准，但区间必须诚实 ——
+    如果真实值落在区间外，说明区间给窄了，是在虚报精度。
+    """
+    data = invoke("estimate_route", {"origin": origin, "destination": dest, "mode": "hsr"}).data
+
+    lo, hi = data["in_vehicle_range_hours"]
+    assert lo <= hours <= hi, f"{origin}→{dest} 车程 {hours}h 不在区间 [{lo}, {hi}]"
+
+    lo_c, hi_c = data["cost_range"]
+    assert lo_c <= fare <= hi_c, f"{origin}→{dest} 票价 ¥{fare} 不在区间 [{lo_c}, {hi_c}]"
+
+
+def test_route_duration_semantics_are_distinct() -> None:
+    """门到门必须严格大于纯车程，差值等于进出站固定耗时。"""
+    from mcp_server.tools.route import STATION_OVERHEAD_H
+
+    data = invoke("estimate_route", {"origin": "北京", "destination": "上海", "mode": "hsr"}).data
+
+    assert data["in_vehicle_hours"] < data["duration_hours"]
+    assert data["duration_hours"] - data["in_vehicle_hours"] == pytest.approx(
+        STATION_OVERHEAD_H, abs=0.15
+    )
+
+
+def test_route_ranges_are_ordered() -> None:
+    """区间必须 low ≤ typical ≤ high，否则前端/模型会误读。"""
+    data = invoke("estimate_route", {"origin": "上海", "destination": "成都", "mode": "hsr"}).data
+
+    lo, hi = data["in_vehicle_range_hours"]
+    assert lo <= data["in_vehicle_hours"] <= hi
+
+    lo_c, hi_c = data["cost_range"]
+    assert lo_c <= data["estimated_cost"] <= hi_c
+
+
+def test_route_short_trip_is_not_overestimated() -> None:
+    """短途曾因固定 overhead 被严重高估，这里钉住。"""
+    data = invoke("estimate_route", {"origin": "上海", "destination": "杭州", "mode": "hsr"}).data
+    # 实际最快 45 分钟，加上进出站约 1.4h；不该超过 2h
+    assert data["in_vehicle_hours"] < 1.0
+    assert data["duration_hours"] < 1.7
+
+
+def test_route_reports_accuracy_and_assumption() -> None:
+    """必须告诉调用方这是估算、精度多少、依据是什么。"""
+    data = invoke("estimate_route", {"origin": "北京", "destination": "上海", "mode": "hsr"}).data
+
+    assert "±" in data["accuracy"]
+    assert "分档" in data["assumption"]
+    assert "12306" in data["note"], "要告诉用户去哪查真实班次"
+
+
+def test_route_detour_grows_with_distance() -> None:
+    """短线线路更直，长线绕行更多 —— 分档系数的方向不能反。"""
+    from mcp_server.tools.route import pick_rail_band
+
+    assert pick_rail_band(150).detour < pick_rail_band(1000).detour
+    assert pick_rail_band(150).detour <= 1.0  # 短线按直线走
+
+
+def test_route_non_rail_modes_are_marked_uncalibrated() -> None:
+    """驾车/大巴等没有真实数据标定，必须如实标注，不能伪装成同等精度。"""
+    data = invoke("estimate_route", {"origin": "上海", "destination": "成都", "mode": "drive"}).data
+
+    assert "未用真实数据标定" in data["assumption"]
+    assert "量级参考" in data["accuracy"]
+
+
+def test_route_same_city_returns_zero() -> None:
+    data = invoke("estimate_route", {"origin": "成都", "destination": "成都", "mode": "hsr"}).data
+    assert data["distance_km"] == 0.0
+    assert data["duration_hours"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 驾车模式接高德（可选增强）
+# ---------------------------------------------------------------------------
+#
+# 合规约束（见 route.py 顶部注释）：
+# - 允许：接口文档的适用场景包含「无需展现地图的场景」
+# - 禁止：服务协议禁止存储/缓存其数据 → 本项目不落库
+# - 配额：个人 10000 次/月、2 QPS → 失败时降级而非重试
+
+
+def test_drive_falls_back_without_key(no_amap_key: None) -> None:
+    """未配置 key 时必须安静降级，行为与改造前一致。"""
+    result = invoke("estimate_route", {"origin": "上海", "destination": "成都", "mode": "drive"})
+
+    assert result.ok
+    assert result.meta.source == "offline:city-coords"
+    assert "量级参考" in result.data["accuracy"]
+    assert "未配置" not in result.data["note"], "没配 key 不该报错，只该静默降级"
+
+
+def test_drive_uses_amap_when_key_present(fake_amap: dict[str, int]) -> None:
+    """配置了 key 就走实时路线，source 要如实标注。"""
+    result = invoke("estimate_route", {"origin": "上海", "destination": "成都", "mode": "drive"})
+
+    assert result.ok
+    assert fake_amap["calls"] == 1
+    assert result.meta.source == "amap:driving"
+    assert result.data["distance_km"] == 1950.0
+    assert "高德" in result.data["accuracy"]
+
+
+def test_drive_amap_cost_splits_tolls_and_fuel(fake_amap: dict[str, int]) -> None:
+    """费用必须拆成过路费（准确）+ 油费（估算），不能混成一个数。"""
+    from mcp_server.tools.route import FUEL_COST_PER_KM
+
+    data = invoke("estimate_route", {"origin": "上海", "destination": "成都", "mode": "drive"}).data
+
+    breakdown = data["cost_breakdown"]
+    assert breakdown["tolls"] == 850.0
+    assert breakdown["fuel"] == pytest.approx(1950.0 * FUEL_COST_PER_KM, abs=0.01)
+    assert data["estimated_cost"] == pytest.approx(breakdown["tolls"] + breakdown["fuel"], abs=0.01)
+
+
+def test_drive_amap_returns_ranges(fake_amap: dict[str, int]) -> None:
+    """实时数据也要给区间 —— 路况会变，点估计会误导。"""
+    data = invoke("estimate_route", {"origin": "上海", "destination": "成都", "mode": "drive"}).data
+
+    lo, hi = data["duration_range_hours"]
+    assert lo <= data["duration_hours"] <= hi
+    lo_c, hi_c = data["cost_range"]
+    assert lo_c <= data["estimated_cost"] <= hi_c
+
+
+def test_drive_degrades_when_amap_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """高德失败必须降级到离线估算，且如实说明原因 —— 不能静默假装成功。"""
+    import mcp_server.tools.route as route_mod
+
+    monkeypatch.setenv("AMAP_API_KEY", "k")
+    monkeypatch.setattr(
+        route_mod,
+        "amap_driving",
+        lambda *a, **kw: (None, "高德配额已用尽（个人账号 10000 次/月）"),
+    )
+
+    result = invoke("estimate_route", {"origin": "上海", "destination": "成都", "mode": "drive"})
+
+    assert result.ok, "降级后仍要给出估算，不能整个失败"
+    assert result.meta.source == "offline:city-coords"
+    assert "已降级为离线估算" in result.data["note"]
+    assert "配额已用尽" in result.data["note"]
+
+
+def test_drive_estimates_tolls_from_toll_distance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """高德的 `tolls` 字段**实测恒为 0**，改用收费路段里程估算。
+
+    2026-10-04 用真实 Key 验证了 4 条路线（含上海→成都 1883km 收费路段），
+    `tolls` 全部返回 0；但 `toll_distance` 是准的。
+    早期实现直接用 tolls，导致过路费永远是 0、总费用被严重低估。
+    """
+    import mcp_server.tools.route as route_mod
+    from mcp_server.tools.route import TOLL_RATE_PER_KM
+
+    monkeypatch.setenv("AMAP_API_KEY", "k")
+    monkeypatch.setattr(
+        route_mod,
+        "amap_driving",
+        lambda *a, **kw: (
+            {
+                "distance_km": 1000.0,
+                "duration_hours": 12.0,
+                "tolls": 0.0,
+                "toll_distance_km": 900.0,
+            },
+            "",
+        ),
+    )
+
+    data = invoke("estimate_route", {"origin": "上海", "destination": "成都", "mode": "drive"}).data
+
+    assert data["cost_breakdown"]["tolls"] == pytest.approx(900.0 * TOLL_RATE_PER_KM, abs=0.01)
+    assert "估算" in data["assumption"], "要说明过路费是估算的"
+    assert data["estimated_cost"] > data["cost_breakdown"]["fuel"], "过路费不该被算成 0"
+
+
+def test_drive_prefers_reported_tolls_when_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """万一高德将来开始返回真实过路费，要优先用它而不是继续估算。"""
+    import mcp_server.tools.route as route_mod
+
+    monkeypatch.setenv("AMAP_API_KEY", "k")
+    monkeypatch.setattr(
+        route_mod,
+        "amap_driving",
+        lambda *a, **kw: (
+            {
+                "distance_km": 1000.0,
+                "duration_hours": 12.0,
+                "tolls": 500.0,
+                "toll_distance_km": 900.0,
+            },
+            "",
+        ),
+    )
+
+    data = invoke("estimate_route", {"origin": "上海", "destination": "成都", "mode": "drive"}).data
+
+    assert data["cost_breakdown"]["tolls"] == 500.0
+    assert "高德返回" in data["assumption"]
+
+
+def test_amap_driving_parses_ok_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    import mcp_server.tools.route as route_mod
+    from tests.conftest import AMAP_OK_PAYLOAD, FakeAmapClient
+
+    monkeypatch.setenv("AMAP_API_KEY", "k")
+    fake = FakeAmapClient(AMAP_OK_PAYLOAD)
+    monkeypatch.setattr(route_mod.httpx, "Client", lambda **kw: fake)
+
+    data, error = route_mod.amap_driving((121.47, 31.23), (104.07, 30.57))
+
+    assert error == ""
+    assert data is not None
+    assert data["distance_km"] == 1950.0
+    assert data["duration_hours"] == 20.0
+    assert data["tolls"] == 850.0
+
+    # 经纬度顺序必须是「经度在前」—— 高德的硬要求，写反会算到错误的地方
+    sent = fake.calls[0]["params"]
+    assert sent["origin"].startswith("121.47")
+    assert sent["destination"].startswith("104.07")
+
+
+def test_amap_driving_reports_quota_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
+    import mcp_server.tools.route as route_mod
+    from tests.conftest import FakeAmapClient
+
+    monkeypatch.setenv("AMAP_API_KEY", "k")
+    fake = FakeAmapClient({"status": "0", "info": "DAILY_QUERY_OVER_LIMIT", "infocode": "10023"})
+    monkeypatch.setattr(route_mod.httpx, "Client", lambda **kw: fake)
+
+    data, error = route_mod.amap_driving((121.47, 31.23), (104.07, 30.57))
+
+    assert data is None
+    assert "配额已用尽" in error
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "0", "info": "INVALID_USER_KEY", "infocode": "10001"},
+        {"status": "1", "route": {"paths": []}},  # 无可用路线
+        {"status": "1"},  # 缺 route
+        {"status": "1", "route": {"paths": [{"distance": "abc"}]}},  # 字段异常
+    ],
+)
+def test_amap_driving_never_raises(monkeypatch: pytest.MonkeyPatch, payload: dict) -> None:
+    """任何异常响应都必须返回错误信息而不是抛异常。"""
+    import mcp_server.tools.route as route_mod
+    from tests.conftest import FakeAmapClient
+
+    monkeypatch.setenv("AMAP_API_KEY", "k")
+    monkeypatch.setattr(route_mod.httpx, "Client", lambda **kw: FakeAmapClient(payload))
+
+    data, error = route_mod.amap_driving((121.47, 31.23), (104.07, 30.57))
+
+    assert data is None
+    assert error, "必须给出可诊断的错误信息"
+
+
+def test_amap_driving_handles_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    import mcp_server.tools.route as route_mod
+    from tests.conftest import FakeAmapClient
+
+    monkeypatch.setenv("AMAP_API_KEY", "k")
+    monkeypatch.setattr(
+        route_mod.httpx,
+        "Client",
+        lambda **kw: FakeAmapClient(exc=httpx.TimeoutException("timed out")),
+    )
+
+    data, error = route_mod.amap_driving((121.47, 31.23), (104.07, 30.57))
+
+    assert data is None
+    assert "超时" in error
+
+
+def test_amap_driving_handles_non_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    import mcp_server.tools.route as route_mod
+    from tests.conftest import FakeAmapClient
+
+    monkeypatch.setenv("AMAP_API_KEY", "k")
+    monkeypatch.setattr(route_mod.httpx, "Client", lambda **kw: FakeAmapClient("<html>502</html>"))
+
+    data, error = route_mod.amap_driving((121.47, 31.23), (104.07, 30.57))
+
+    assert data is None
+    assert "JSON" in error
+
+
+def test_amap_driving_without_key_is_silent(no_amap_key: None) -> None:
+    import mcp_server.tools.route as route_mod
+
+    data, error = route_mod.amap_driving((121.47, 31.23), (104.07, 30.57))
+
+    assert data is None
+    assert "未配置" in error
+
+
+def test_rail_mode_never_calls_amap(fake_amap: dict[str, int]) -> None:
+    """高德的驾车接口对铁路无意义，不该被调用 —— 白烧配额。"""
+    invoke("estimate_route", {"origin": "北京", "destination": "上海", "mode": "hsr"})
+
+    assert fake_amap["calls"] == 0
+
+
+def test_amap_key_does_not_leak_into_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """key 绝不能出现在返回给模型/前端的数据里。"""
+    import mcp_server.tools.route as route_mod
+    from tests.conftest import AMAP_OK_PAYLOAD, FakeAmapClient
+
+    secret = "super-secret-amap-key"
+    monkeypatch.setenv("AMAP_API_KEY", secret)
+    monkeypatch.setattr(
+        route_mod.httpx, "Client", lambda **kw: FakeAmapClient(AMAP_OK_PAYLOAD)
+    )
+
+    result = invoke("estimate_route", {"origin": "上海", "destination": "成都", "mode": "drive"})
+    blob = json.dumps(result.to_payload(), ensure_ascii=False)
+
+    assert secret not in blob
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("hsr", "12306"),
+        ("train", "12306"),
+        ("drive", "地图"),
+        ("flight", "航司"),
+        ("bus", "地图"),
+    ],
+)
+def test_route_channel_matches_mode(no_amap_key: None, mode: str, expected: str) -> None:
+    """核实渠道必须与交通方式匹配 —— 给驾车用户提示「查 12306」毫无意义。"""
+    data = invoke("estimate_route", {"origin": "上海", "destination": "成都", "mode": mode}).data
+
+    assert expected in data["note"], f"{mode} 的核实渠道不对：{data['note']}"
 
 
 def test_estimate_route_rejects_bad_mode() -> None:

@@ -92,6 +92,7 @@ def _print_result(result) -> int:  # noqa: ANN001
             print("假设：")
             for a in result.plan.assumptions:
                 print(f"  - {a}")
+
         for phase in result.plan.phases:
             print(f"\n【{phase.name}】")
             for step in phase.steps:
@@ -102,6 +103,14 @@ def _print_result(result) -> int:  # noqa: ANN001
         dag_ok, dag_msg = result.plan.check_dag()
         print(f"依赖图校验：{'✅ 无环' if dag_ok else '❌ ' + dag_msg}")
         print(f"引用工具：{', '.join(sorted(result.plan.referenced_tools())) or '（无）'}")
+
+        # 数据时效：让用户知道这些数字有多新
+        if result.plan.data_freshness or result.plan.verification_channels:
+            print("\n⏱  数据时效")
+            if result.plan.data_freshness:
+                print(f"  {result.plan.data_freshness}")
+            for channel in result.plan.verification_channels:
+                print(f"  · 出行前可核实：{channel}")
 
     print("\n" + "=" * 60)
     print("🔍 运行轨迹")
@@ -142,6 +151,16 @@ def main(argv: list[str] | None = None) -> int:
         help="以事件流方式输出进度（验证流式接口；Web 层走同一套事件）",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="打印编排过程日志")
+    parser.add_argument(
+        "--label",
+        default="",
+        help="给本次运行打标签，便于事后用 --group-by label 对比（如 prompt-v2）",
+    )
+    parser.add_argument(
+        "--no-log",
+        action="store_true",
+        help="不写入运行记录（默认写入 logs/runs.jsonl）",
+    )
     args = parser.parse_args(argv)
 
     if args.list_tools:
@@ -235,6 +254,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json and result.plan is not None:
         print("\n" + json.dumps(result.plan.model_dump(), ensure_ascii=False, indent=2))
+
+    # 运行记录：把这次运行落成一行 JSONL，供事后汇总对比
+    if not args.no_log:
+        from agent.run_log import record_run, settings_params
+
+        entry = record_run(
+            result,
+            task,
+            source="demo" if args.demo else "cli",
+            label=args.label,
+            model=settings.model,
+            params=settings_params(settings),
+        )
+        if entry is not None:
+            print(f"\n📝 已记录运行 {entry['run_id']} → {entry['output_status']}")
 
     if args.save:
         from mcp_server.tools.base import invoke

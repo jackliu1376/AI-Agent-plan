@@ -597,4 +597,6 @@ def test_route_unknown_city_reports_coverage() -> None:
     result = invoke("estimate_route", {"origin": "霍格沃茨", "destination": "纽约"})
     assert not result.ok
     assert result.error.code == "NOT_FOUND"
-    assert "本地城市库已收录" in result.error.message
+    # 要报出覆盖范围，让模型能区分「库里没有」和「名字拼错了」
+    assert "城市库收录" in result.error.message
+    assert "个城市" in result.error.message

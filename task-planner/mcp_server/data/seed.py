@@ -2,11 +2,22 @@
 
 数据说明
 --------
-- 覆盖 **12 个城市**（国内 5 个 + 国际 7 个），用于演示跨域规划。
+- 覆盖中国全部省级行政区（含港澳台）与主要国际城市，具体范围见
+  ``covered_cities()``，不要在此处硬编码数字（会随数据增长而过时）。
 - 价格为**当地货币**，由 ``currency`` 字段标注。外币价格可通过
   ``convert_currency`` 工具折算成人民币，形成工具协作。
-- 这是**教学演示用的离线种子数据**，价格为量级参考，不代表实时票价。
-- 数据库文件由本模块生成；``connect()`` 在文件缺失或结构/行数变化时自动重建。
+- **这是教学演示用的离线种子数据，不代表实时票价。**
+
+数据时效（重要）
+----------------
+``price`` / ``open_hours`` / ``rating`` 属于**时效性数据** —— 票价会调整、
+开放时间会变更、景点会歇业。每条记录带 ``verified_at`` 字段标明**人工核对月份**。
+
+``verified_at`` 的语义是「这个数字在什么时候被人工确认过」，**不是**
+「数据是实时的」。Agent 引用这三类字段时必须转述该时间，让用户知道数据的
+新鲜度；出行前应通过官方渠道复核。
+
+维护约定：改动种子数据后，把 ``DATA_VERIFIED_AT`` 更新为当月。
 """
 
 from __future__ import annotations
@@ -18,6 +29,15 @@ from mcp_server.data.cities import lookup_city
 from mcp_server.tools.base import PROJECT_ROOT, env
 
 DEFAULT_DB = PROJECT_ROOT / "mcp_server" / "data" / "attractions.db"
+
+# 种子数据的核对月份。改动任何 price / open_hours / rating 后必须同步更新。
+DATA_VERIFIED_AT = "2026-10"
+
+# 时效性字段的提示文案（工具返回给模型，供其在计划中转述）
+FRESHNESS_DISCLAIMER = (
+    f"票价、开放时间、评分为 {DATA_VERIFIED_AT} 人工核对的演示数据，"
+    "可能已有变动；出行前请通过官方渠道确认。"
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS attractions (
@@ -32,7 +52,10 @@ CREATE TABLE IF NOT EXISTS attractions (
     rating         REAL    NOT NULL,
     kid_friendly   INTEGER NOT NULL DEFAULT 0,
     open_hours     TEXT    NOT NULL DEFAULT '',
-    note           TEXT    NOT NULL DEFAULT ''
+    note           TEXT    NOT NULL DEFAULT '',
+    -- 时效性数据的核对月份（如 2026-10）。语义是「何时人工确认过」，
+    -- 不是「数据是实时的」—— agent 引用票价/开放时间时必须转述它。
+    verified_at    TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_city ON attractions(city);
 """
@@ -40,6 +63,7 @@ CREATE INDEX IF NOT EXISTS idx_city ON attractions(city);
 COLUMNS = (
     "city", "country", "name", "tags", "price", "currency",
     "duration_hours", "rating", "kid_friendly", "open_hours", "note",
+    "verified_at",
 )
 
 
@@ -54,8 +78,13 @@ def _row(
     open_hours: str,
     note: str,
     currency: str = "CNY",
+    verified_at: str = "",
 ) -> tuple:
-    """构造一行种子数据（country 由城市表自动补齐，避免两处维护）。"""
+    """构造一行种子数据（country 由城市表自动补齐，避免两处维护）。
+
+    ``verified_at`` 默认取模块级的 ``DATA_VERIFIED_AT``；个别记录若核对时间
+    不同，可以单独传入覆盖。
+    """
     country = lookup_city(city)
     return (
         city,
@@ -69,6 +98,7 @@ def _row(
         kid,
         open_hours,
         note,
+        verified_at or DATA_VERIFIED_AT,
     )
 
 
@@ -512,6 +542,20 @@ def covered_cities() -> list[str]:
     with connect() as conn:
         rows = conn.execute("SELECT DISTINCT city FROM attractions ORDER BY city").fetchall()
     return [r["city"] for r in rows]
+
+
+def data_verified_at() -> str:
+    """种子数据的核对月份。
+
+    供工具层写入返回值与提示词 —— 调用方不应自己拼这个字符串，
+    否则改数据时容易漏改某一处。
+    """
+    return DATA_VERIFIED_AT
+
+
+def freshness_disclaimer() -> str:
+    """时效性数据的标准提示文案。"""
+    return FRESHNESS_DISCLAIMER
 
 
 if __name__ == "__main__":  # pragma: no cover - 手动重建数据库用

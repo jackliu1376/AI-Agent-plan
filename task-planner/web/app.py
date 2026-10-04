@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field
 from agent.config import Settings
 from agent.events import Event
 from agent.loop import Orchestrator
+from agent.run_log import record_run, settings_params
 from agent.tool_runner import LocalToolRunner
 from mcp_server.tools.base import load_all_tools, openai_tool_schemas
 from web.session import Session, SessionStore
@@ -384,6 +385,16 @@ async def _drive_session(app: FastAPI, session: Session) -> None:
             await session.set_status("failed")
         else:
             await session.set_status("done")
+
+        # 运行记录：成功和失败都要记 —— 失败样本才是排查的重点
+        if result is not None:
+            record_run(
+                result,
+                session.task,
+                source="web",
+                model=app.state.settings.model,
+                params=settings_params(app.state.settings),
+            )
     except asyncio.CancelledError:
         await session.set_status("failed")
         raise

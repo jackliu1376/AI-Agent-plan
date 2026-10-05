@@ -1,10 +1,15 @@
-# 任务规划助手 · Task Planner
+# Cairn · 任务规划助手
 
 > 把一句"我想周末去成都玩两天"变成一份**有序、可执行、带依赖关系**的行动计划。
 > 一个基于 **MCP 协议**的工具调用 Agent，会自己查天气、翻景点库、算交通，缺数据时如实说而不是编。
 
+**Cairn** /kern/ —— 徒步时用石头堆起的路标。名字取自它和这个项目的三处同构：
+**一块一块垒起来**（每个事实都经工具查证后才写进计划）、
+**只用手里真有的石头**（查不到就说查不到，绝不编造）、
+立在**不熟悉的地形**里（任务越模糊，越要先澄清再规划）。
+
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-553%20passed-2ea44f)
+![Tests](https://img.shields.io/badge/tests-585%20passed-2ea44f)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Protocol](https://img.shields.io/badge/protocol-MCP-6E56CF)
 ![LLM](https://img.shields.io/badge/LLM-DeepSeek-4D6BFE)
@@ -189,11 +194,39 @@ uv run task-planner-web      # → http://127.0.0.1:8000
 ```bash
 cd frontend
 npm install
-npm run dev                  # → http://localhost:5173，/api 自动代理到 8000
+npm run dev:all              # 一条命令拉起后端 + 前端，Ctrl+C 一起停
+                             # → http://localhost:5173
 ```
 
-开发时跑两个进程（后端 8000 + 前端 5173）；改完执行 `npm run build`，
-产物直接输出到 `web/static/`，FastAPI 会自动托管，生产环境只需一个进程。
+`dev:all` 会先把后端拉起来、等它就绪，再启动 Vite —— 这样首屏不会全是代理错误。
+输出带 `[api]` / `[web]` 前缀，方便区分是哪个进程在说话。
+
+**它会做三件「开两个终端」做不到的事**：
+
+1. **启动前清理残留进程** —— 上次没退干净的 `task-planner-web.exe` 会让这次启动
+   「看起来成功了」，实际是旧进程在服务，你改半天代码发现没生效。
+2. **停止时杀整棵进程树**（Windows 用 `taskkill /F /T`）—— `uv run` 会派生子进程，
+   朴素的 `child.kill()` 只杀得掉 wrapper，会留下占着端口和文件句柄的孤儿进程。
+3. **端口占用时明确警告**，而不是让你对着一个连到旧进程的页面调试。
+
+只想跑其中一个时，仍然可以分别启动：
+
+```bash
+uv run task-planner-web      # 只跑后端（8000）
+npm run dev                  # 只跑前端（5173，代理 /api → 8000）
+```
+
+> Windows 上也可以直接双击 `start-dev.bat`。
+
+**启动失败？** 两个最常见的原因：
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `UnicodeEncodeError: 'gbk' codec can't encode ...` | Windows 控制台是 GBK，输出里的 emoji 编码不了 | 已在 `common/console.py` 统一兜底（降级成 `?` 而不是崩溃）。若仍遇到，说明有新入口没接上 |
+| `os error 32` / 端口被占 | 上次没退干净的孤儿进程 | `npm run dev:all` 启动时会自动清理；手动的话按 PID 精确杀，**不要** `taskkill /IM node.exe`（会误伤编辑器等其它 node 进程） |
+
+改完前端执行 `npm run build`，产物直接输出到 `web/static/`，
+FastAPI 会自动托管，生产环境只需一个进程。
 
 ### 其他命令
 
@@ -221,10 +254,16 @@ async for event in orch.run_stream("我想周末去成都玩两天"):
 | `run_started` | 开始 | `max_turns` `tool_budget` |
 | `turn_started` | 每轮模型调用 | `turn` `max_turns` |
 | `tool_call` | 模型请求调工具 | `tool` `args` |
-| `tool_result` | 工具返回 | `ok` `error_code` `latency_ms` `budget_used` |
+| `tool_result` | 工具返回 | **`summary`** `ok` `error_code` `latency_ms` `budget_used` |
 | `clarification` | **需要用户补充信息** | `question` `options` `reason` |
 | `repair` | 输出不合规触发重试 | `reason` |
 | `plan_ready` | 产出最终计划 | `plan` `markdown` `trace` |
+
+> **`summary` 是人话摘要**，由每个工具自己生成（`ToolSpec.summarize`）——
+> 只有工具知道返回数据里哪些字段是重点。前端用它把「已查证」列表
+> 渲染成 `天气 10-10 起 2 天，小毛毛雨，18–25°C`，
+> 而不是 `get_weather_forecast 1464ms · 预算 1/12`。
+> 摘要**绝不抛异常**：它只是展示层的东西，不能把一次成功的调用变成失败。
 
 三个约定：
 
@@ -266,10 +305,11 @@ uv run task-planner-web            # → http://127.0.0.1:8000
 | `GET` | `/api/health` | 健康检查 |
 | `GET` | `/api/tools` | 工具清单（含 JSON Schema，前端可渲染表单） |
 | `POST` | `/api/sessions` | 提交任务，返回 `session_id` |
+| `GET` | `/api/sessions` | **「最近」列表**（`?limit=N`），侧栏数据源 |
 | `GET` | `/api/sessions/{id}` | 查询状态 / 结果（刷新页面后恢复用） |
 | `GET` | `/api/sessions/{id}/events` | **SSE 事件流**，支持 `?cursor=N` 续传 |
 | `POST` | `/api/sessions/{id}/answers` | 提交澄清答案 |
-| `DELETE` | `/api/sessions/{id}` | 结束并清理会话 |
+| `DELETE` | `/api/sessions/{id}` | 删除会话（内存 + 磁盘） |
 
 ### 为什么拆成两个请求？
 
@@ -308,16 +348,48 @@ POST /api/sessions/{id}/answers  {"answer":"成都，10月3-4日"}
       → 协程恢复，继续调用工具直到产出计划
 ```
 
+### 会话持久化：让「最近」真的打得开
+
+会话在**状态跃迁时**落盘到 `logs/sessions.db`（SQLite，标准库，无新依赖）。
+
+为什么需要它：原来的会话只活在内存里（TTL 30 分钟 + 上限 200 个）。
+而前端把「最近」列表存在 `localStorage` —— 于是形成一个很难察觉的割裂：
+
+```
+刷新页面       → 列表还在（localStorage）
+重启服务 / 过 TTL → 点进去说「已过期」（内存里没了）
+```
+
+用户看到一份「看起来还在、点开却没有」的历史。现在列表改由
+`GET /api/sessions` 提供，而每一条都对应磁盘上一行真实存在的记录。
+
+| 设计点 | 做法 | 理由 |
+|---|---|---|
+| **写入时机** | 只在 `running / awaiting_input / done / failed` 四个跃迁点写 | 一次运行有 10–30 个事件，逐个写盘是明显的写放大 |
+| **内存 vs 磁盘** | 内存是主，磁盘是后备；内存未命中就回磁盘捞 | 事件推送要快，历史查询要全 |
+| **TTL 回收** | **只清内存，不删盘** | 「暂时没人看」和「用户不要了」是两回事 |
+| **`DELETE`** | 内存 + 磁盘一起删（硬删除） | 用户明确说不要了 |
+| **容量** | 磁盘最多 500 条，按创建时间淘汰最旧的 | 和 `runs.jsonl` 同一条原则：不能无限长 |
+| **中断标记** | 启动时把上次遗留的 `running` 标成 `interrupted` | 否则「最近」里会出现永远转圈的僵尸记录 |
+| **终止事件** | 恢复非正常结束的会话时补一条 `error` 事件 | 前端靠它判断「可以收尾」，缺了会一直重连到上限 |
+| **失败容忍** | 所有落盘方法**绝不抛异常**，只返回 `False` / 空 | 持久化是旁路，磁盘满了不该让正在跑的规划崩掉 |
+
+`interrupted` 是一个独立状态，不是 `failed` 的一种 —— 它要说的是
+「服务重启打断了这次运行」，和「模型没产出合规计划」是两码事，
+前端圆点与提示文案也不同。
+
+`SESSION_DB_ENABLED=0` 可整体关掉，行为退回纯内存。
+
 ### 部署注意事项
 
 | 项 | 说明 |
 |---|---|
 | **API Key** | 只存在于服务端，绝不下发前端。所有 LLM 调用都在后端完成 |
 | **限流** | 默认 10 次 / IP / 小时（`WEB_RATE_LIMIT` 可调），防止被刷爆额度 |
-| **会话回收** | TTL 30 分钟 + 上限 200 个，超限按最旧优先淘汰 |
+| **会话回收** | 内存里 TTL 30 分钟 + 上限 200 个；磁盘保留最近 500 条。回收只清内存，记录本身还在 |
 | **事件循环** | `llm.chat()` 与工具调用都是同步的，已放进线程池（`asyncio.to_thread`）。否则一个请求会冻住整个服务 |
 | **反向代理** | 已设置 `X-Accel-Buffering: no`，避免 Nginx 缓冲 SSE 导致事件攒着一起发 |
-| **多实例** | `SessionStore` 是内存实现。要多副本部署需换成 Redis（接口不变） |
+| **多实例** | `SessionStore` 是内存实现，磁盘后备是本地 SQLite 文件。要多副本部署需把两者都换成共享存储（Redis + 共享 DB） |
 
 ### 环境变量
 
@@ -328,6 +400,8 @@ POST /api/sessions/{id}/answers  {"answer":"成都，10月3-4日"}
 | `WEB_RELOAD` | — | 设为 `1` 开启热重载 |
 | `WEB_RATE_LIMIT` | `10` | 每 IP 每小时的建会话上限 |
 | `WEB_TRUST_PROXY` | — | 设为 `1` 时按 `X-Forwarded-For` 限流（**仅前置可信代理时开启**，否则可被伪造绕过） |
+| `SESSION_DB_ENABLED` | `1` | 设为 `0` 关闭会话落盘，退回纯内存 |
+| `SESSION_DB_PATH` | `logs/sessions.db` | 会话库位置（相对路径基于项目根目录） |
 
 ---
 
@@ -375,9 +449,10 @@ React 18 的 `StrictMode` 在开发模式下会「挂载 → 卸载 → 再挂�
 
 ```bash
 cd frontend
+npm run dev:all        # 开发：一条命令拉起后端 + 前端（Ctrl+C 一起停）
 npm run typecheck      # tsc --noEmit
 npm run build          # 产物 → ../web/static/
-npm run dev            # 开发服务器（5173，代理 /api → 8000）
+npm run dev            # 只跑前端（5173，代理 /api → 8000）
 ```
 
 ---
@@ -586,6 +661,7 @@ AI-Agent/
    ├─ web/
    │  ├─ app.py                   FastAPI 路由 + SSE + 限流
    │  ├─ session.py               会话状态、事件重放、澄清挂起/唤醒
+   │  ├─ session_db.py            会话落盘（SQLite）：重启后「最近」还打得开
    │  ├─ serve.py                 启动入口（task-planner-web）
    │  └─ static/                  前端构建产物（随仓库提交，免 Node 运行）
    ├─ desktop/
@@ -593,11 +669,14 @@ AI-Agent/
    ├─ frontend/                   前端源码（React + TypeScript + Vite）
    │  └─ src/
    │     ├─ api/                  类型契约 + HTTP/SSE 客户端
-   │     ├─ hooks/                会话状态机
-   │     └─ components/           输入 / 进度 / 澄清 / 计划
+   │     ├─ lib/toolLabels.ts     工具名 → 人话（已查证列表 + 步骤出处）
+   │     ├─ hooks/                会话状态机、后端健康检查
+   │     └─ components/           侧栏 / 输入 / 已查证 / 澄清 / 计划
+   ├─ scripts/dev.mjs             一条命令拉起后端+前端（含进程树清理）
+   ├─ start-dev.bat               Windows 双击启动开发环境
    ├─ common/envelope.py          统一返回信封
-   ├─ tests/                      553 个用例
-   ├─ logs/                       运行记录（不进版本库）
+   ├─ tests/                      617 个用例
+   ├─ logs/                       运行记录 + 会话库（不进版本库）
    └─ outputs/                    计划落盘沙箱
 ```
 
@@ -629,23 +708,26 @@ AI-Agent/
 ## 测试
 
 ```bash
-uv run pytest          # 553 passed
+uv run pytest          # 617 passed
 uv run pytest -v       # 查看每个用例名
 ```
 
 | 测试文件 | 用例数 | 覆盖内容 |
 |---|---|---|
 | `test_cities.py` | 116 | 城市解析三层策略、景点库覆盖、**21 个错误解析回归用例** |
-| `test_tools.py` | 79 | 8 个工具的行为、错误码、沙箱、重试、幂等 + **交通估算精度回归** |
-| `test_fixes.py` | 53 | **代码评审发现的缺陷回归** + 数据时效与核实渠道 |
-| `test_attraction_live.py` | 44 | **高德 POI 匹配校验**：城市冲突、名称相似度、拒绝错数据 |
-| `test_transit.py` | 47 | **高德公交换乘解析**：跨天时刻、缺失字段、仓位价格、错误路径 |
+| `test_tools.py` | 79 | 10 个工具的行为、错误码、沙箱、重试、幂等 + **交通估算精度回归** |
 | `test_eval_runner.py` | 65 | **评测判定逻辑本身**：样本校验、关键词匹配、假失败防护 |
 | `test_run_log.py` | 59 | **运行记录：绝不抛异常、坏行容错、轮转、统计口径** |
+| `test_fixes.py` | 53 | **代码评审发现的缺陷回归** + 数据时效与核实渠道 |
+| `test_transit.py` | 47 | **高德公交换乘解析**：跨天时刻、缺失字段、仓位价格、错误路径 |
+| `test_attraction_live.py` | 44 | **高德 POI 匹配校验**：城市冲突、名称相似度、拒绝错数据 |
+| `test_session_db.py` | 32 | **会话持久化**：落盘/恢复、回收不删盘、中断标记、删除不复活、坏盘不崩 |
 | `test_loop.py` | 27 | 编排循环 + 全部护栏 |
 | `test_web.py` | 25 | HTTP 路由、**SSE 重放/续传**、澄清跨请求、会话回收、运行记录 |
+| `test_summaries.py` | 23 | **工具人话摘要**：绝不抛异常、措辞、事件真的带上摘要 |
 | `test_config.py` | 18 | base_url 校验、日期注入、**密钥泄漏扫描** |
 | `test_stream.py` | 16 | 事件流序列、**JSON 可序列化**、澄清挂起与恢复 |
+| `test_console.py` | 9 | **控制台编码兜底**：GBK 下 emoji 不再让服务崩掉 |
 | `test_mcp_bridge.py` | 4 | MCP 协议桥接（真实拉起子进程） |
 
 测试策略是**脚本化 LLM + 真实工具**：LLM 按剧本返回（不消耗 API 额度），
@@ -1471,7 +1553,7 @@ Wikidata 无此属性。所以维持「如实标注演示数据 + 给官方查�
 
 | 类别 | 文件 |
 |---|---|
-| ✍️ **人工编写** | `agent/prompts/system.md`（系统提示词）<br>`agent/loop.py`（编排循环与全部护栏）<br>`agent/events.py`（事件流设计）<br>`agent/run_log.py`、`agent/run_report.py`、`agent/eval_runner.py`（评测基建）<br>`evals/samples.yaml`（评测样本集）<br>`web/session.py`（会话与澄清挂起机制）<br>`tests/`（测试用例来自需求设计）<br>`mcp_server/data/seed.py`（景点数据）<br>`mcp_server/data/cities.py`（策展城市表） |
+| ✍️ **人工编写** | `agent/prompts/system.md`（系统提示词）<br>`agent/loop.py`（编排循环与全部护栏）<br>`agent/events.py`（事件流设计）<br>`agent/run_log.py`、`agent/run_report.py`、`agent/eval_runner.py`（评测基建）<br>`evals/samples.yaml`（评测样本集）<br>`web/session.py`（会话与澄清挂起机制）、`web/session_db.py`（会话落盘与中断恢复）<br>`tests/`（测试用例来自需求设计）<br>`mcp_server/data/seed.py`（景点数据）<br>`mcp_server/data/cities.py`（策展城市表） |
 | 🤖 AI 生成后人工复核 | `mcp_server/tools/*.py`（8 个工具）<br>`mcp_server/server.py`、`agent/llm_client.py`<br>`agent/tool_runner.py`、`agent/schema.py`<br>`agent/cli.py`、`agent/config.py`、`agent/demo.py`<br>`mcp_server/data/build_city_index.py`<br>`web/app.py`、`web/serve.py`<br>`frontend/`（React 组件、状态机、样式） |
 
 ---

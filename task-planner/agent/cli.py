@@ -26,6 +26,7 @@ from agent.config import Settings
 from agent.demo import ScriptedLLM, build_demo_script
 from agent.loop import Orchestrator
 from agent.tool_runner import LocalToolRunner, MCPToolRunner, registered_tool_names
+from common.console import ensure_safe_stdio
 
 
 def _make_ask_user(interactive: bool):
@@ -129,6 +130,10 @@ def _print_result(result) -> int:  # noqa: ANN001
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows 控制台是 GBK，emoji 编码不了会抛 UnicodeEncodeError。
+    # 这个文件里有 18 处 emoji，不兜底的话在真实控制台里会直接崩。
+    ensure_safe_stdio()
+
     parser = argparse.ArgumentParser(
         prog="task-planner",
         description="任务规划助手 —— 把复杂任务分解为有序可执行的步骤",

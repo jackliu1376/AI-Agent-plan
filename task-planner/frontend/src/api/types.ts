@@ -44,6 +44,8 @@ export interface ToolCallData {
 export interface ToolResultData {
   tool: string
   ok: boolean
+  /** 人话摘要，由后端各工具自己生成（`ToolSpec.summarize`）。失败时为空串。 */
+  summary: string
   error_code: string | null
   latency_ms: number
   attempts: number
@@ -163,8 +165,18 @@ export interface Trace {
 // HTTP
 // ---------------------------------------------------------------------------
 
-/** 会话状态机：pending → running ⇄ awaiting_input → done | failed */
-export type SessionStatus = 'pending' | 'running' | 'awaiting_input' | 'done' | 'failed'
+/** 会话状态机：pending → running ⇄ awaiting_input → done | failed
+ *
+ *  `interrupted` 是「没跑完就没了」：服务重启或进程崩溃。
+ *  单独一个状态是为了如实说明原因，而不是含糊地报「失败」。
+ */
+export type SessionStatus =
+  | 'pending'
+  | 'running'
+  | 'awaiting_input'
+  | 'done'
+  | 'failed'
+  | 'interrupted'
 
 export interface CreateSessionResponse {
   session_id: string
@@ -181,6 +193,25 @@ export interface SessionView {
   result: PlanReadyData | null
   error: string | null
   event_count: number
+  /** 完整事件流。恢复一条旧记录时用它渲染「已查证 N 项」。 */
+  events: PlanEvent[]
+}
+
+/** 「最近」列表的一行。刻意不含 events / result —— 列表不需要正文。 */
+export interface SessionListItem {
+  session_id: string
+  task: string
+  status: SessionStatus
+  /** Unix 秒 */
+  created_at: number
+  updated_at: number
+  /** null = 还没有结论（还在跑），与 false（没成功）不同 */
+  ok: boolean | null
+}
+
+export interface SessionListResponse {
+  count: number
+  sessions: SessionListItem[]
 }
 
 export interface ToolInfo {

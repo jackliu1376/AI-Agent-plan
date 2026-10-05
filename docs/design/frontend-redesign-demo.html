@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>任务规划助手 · 界面改版 demo</title>
+<style>
+/* ============================================================
+   设计令牌 —— 取自参考图的共同特征：
+   极浅暖底 + 纯白面 + 发丝线 + 近黑主色 + 低饱和点缀色
+   没有渐变、没有阴影堆叠、没有高饱和蓝
+   ============================================================ */
+:root {
+  --bg:        #faf9f8;
+  --surface:   #ffffff;
+  --surface-2: #f6f5f3;
+  --line:      #eceae6;
+  --line-2:    #dedbd5;
+
+  --ink:       #1b1a18;
+  --ink-2:     #6d6a63;
+  --ink-3:     #a6a29a;
+
+  /* 近黑做主色（参考图 2），玫瑰色只用于「需要你注意」（参考图 1） */
+  --accent:      #1b1a18;
+  --rose:        #b8555f;
+  --rose-soft:   #fdf3f4;
+  --sage:        #4d7c5c;
+  --sage-soft:   #f2f7f3;
+  --amber:       #9a7420;
+  --amber-soft:  #fbf7ee;
+
+  --r-card: 16px;
+  --r-ctl:  10px;
+  --r-pill: 999px;
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: "Instrument Sans", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #f2f1ef;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 图纸页头（非产品界面） ---------- */
+.sheet-head {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 40px 28px 8px;
+}
+.sheet-head h1 { margin: 0 0 6px; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+.sheet-head p  { margin: 0; color: var(--ink-2); font-size: 13px; }
+.sheet-head code {
+  font-family: var(--mono); font-size: 12px;
+  background: #e9e7e4; padding: 1px 5px; border-radius: 5px;
+}
+
+.stage {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px 28px 8px;
+}
+.stage-label {
+  display: flex; align-items: baseline; gap: 10px;
+  margin: 0 0 10px; padding-left: 2px;
+}
+.stage-label b { font-size: 13px; font-weight: 600; }
+.stage-label span { font-size: 12px; color: var(--ink-3); }
+
+/* ---------- 设备框 ---------- */
+.frame {
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: 18px;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 208px 1fr;
+  min-height: 480px;
+}
+.frame.plain { grid-template-columns: 1fr; }
+
+/* ---------- 左侧栏 ---------- */
+.rail {
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.brand-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 6px 0;
+}
+.brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.brand-mark { flex: none; display: block; }
+.brand-name { font-size: 13.5px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.25; }
+.brand-sub  { font-size: 11px; color: var(--ink-3); line-height: 1.3; }
+
+/* 折叠侧栏 —— 放在品牌行右侧，与品牌同一水平线 */
+.rail-toggle {
+  flex: none; width: 24px; height: 24px; padding: 0;
+  display: grid; place-items: center;
+  color: var(--ink-3); background: none;
+  border: none; border-radius: 7px; cursor: pointer;
+  transition: background-color .12s, color .12s;
+}
+.rail-toggle:hover { background: var(--surface-2); color: var(--ink); }
+.rail-toggle:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+/* ---------- 折叠态 ---------- */
+.frame.collapsed { grid-template-columns: 60px 1fr; }
+.frame.collapsed .rail {
+  padding: 16px 10px; gap: 18px; align-items: center;
+}
+.frame.collapsed .brand-row {
+  flex-direction: column; gap: 10px; padding: 0; justify-content: center;
+}
+/* 文字全部让位，只留图形与状态点 */
+.frame.collapsed .brand-text,
+.frame.collapsed .rail-btn-text,
+.frame.collapsed .rail-group > h3,
+.frame.collapsed .rail-item-text,
+.frame.collapsed .rail-foot .k,
+.frame.collapsed .rail-foot .v-text { display: none; }
+
+.frame.collapsed .rail-btn {
+  width: 32px; height: 32px; padding: 0; justify-content: center;
+}
+.frame.collapsed .rail-group { align-items: center; }
+.frame.collapsed .rail-item { padding: 5px 0; justify-content: center; }
+.frame.collapsed .rail-item .dot { display: none; }
+.frame.collapsed .rail-item-initial {
+  display: grid; place-items: center;
+  width: 28px; height: 28px; border-radius: 9px;
+  font-size: 12px; font-weight: 500;
+  color: var(--ink-2); background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.frame.collapsed .rail-item.active .rail-item-initial {
+  color: #fff; background: var(--ink); border-color: var(--ink);
+}
+.frame.collapsed .rail-empty { display: none; }
+.frame.collapsed .rail-foot { padding: 10px 0; border-top: 1px solid var(--line); width: 100%; }
+.frame.collapsed .rail-foot .v { justify-content: center; }
+
+.rail-btn {
+  display: flex; align-items: center; gap: 7px;
+  width: 100%; padding: 8px 10px;
+  font: inherit; font-size: 13px; font-weight: 500;
+  color: #fff; background: var(--ink);
+  border: 1px solid var(--ink); border-radius: var(--r-ctl);
+  cursor: pointer; text-align: left;
+}
+.rail-btn svg { flex: none; }
+
+.rail-group { display: flex; flex-direction: column; gap: 2px; }
+.rail-group > h3 {
+  margin: 0 0 6px; padding: 0 6px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.05em;
+  color: var(--ink-3); text-transform: uppercase;
+}
+.rail-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: 8px;
+  font-size: 13px; color: var(--ink-2);
+  cursor: default;
+}
+.rail-item.active { background: var(--surface-2); color: var(--ink); font-weight: 500; }
+.rail-item .dot {
+  width: 6px; height: 6px; flex: none; border-radius: 50%;
+  background: var(--line-2);
+}
+.rail-item.active .dot { background: var(--ink); }
+.rail-item.done .dot   { background: var(--sage); }
+.rail-empty { padding: 7px 10px; font-size: 12px; color: var(--ink-3); }
+
+/* 折叠后才出现的首字方块 —— 只留圆点认不出是哪个任务 */
+.rail-item-initial { display: none; }
+
+.rail-foot { margin-top: auto; padding: 10px; border-top: 1px solid var(--line); }
+.rail-foot .k { font-size: 11px; color: var(--ink-3); margin-bottom: 4px; }
+.rail-foot .v { font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+.rail-foot .v i {
+  width: 5px; height: 5px; border-radius: 50%; background: var(--sage); display: block;
+}
+
+/* ---------- 主画布 ---------- */
+.canvas { padding: 26px 32px 32px; min-width: 0; }
+.canvas.narrow { max-width: 620px; margin: 0 auto; padding-top: 64px; }
+
+/* ---------- 空状态 ---------- */
+.hero h1 {
+  margin: 0 0 8px; font-size: 26px; font-weight: 600;
+  letter-spacing: -0.02em; line-height: 1.25;
+}
+.hero p { margin: 0 0 26px; color: var(--ink-2); font-size: 14px; }
+
+.ask {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  padding: 6px 6px 6px 16px;
+  display: flex; align-items: center; gap: 10px;
+}
+.ask input {
+  flex: 1; min-width: 0;
+  border: none; outline: none; background: none;
+  font: inherit; font-size: 14px; color: var(--ink);
+  padding: 12px 0;
+}
+.ask input::placeholder { color: var(--ink-3); }
+.ask button {
+  flex: none; display: flex; align-items: center; gap: 6px;
+  padding: 9px 16px; font: inherit; font-size: 13px; font-weight: 500;
+  color: #fff; background: var(--ink);
+  border: none; border-radius: var(--r-ctl); cursor: pointer;
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.chips button {
+  padding: 6px 12px; font: inherit; font-size: 12px;
+  color: var(--ink-2); background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r-pill);
+  cursor: pointer;
+}
+.chips button:hover { border-color: var(--line-2); color: var(--ink); }
+
+/* ---------- 任务回显 ---------- */
+.echo {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.echo-task { font-size: 15px; font-weight: 500; letter-spacing: -0.01em; }
+.echo-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+.tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 9px; border-radius: var(--r-pill);
+  font-size: 12px; background: var(--surface-2); color: var(--ink-2);
+  border: 1px solid var(--line);
+}
+
+/* ---------- 进度条 ---------- */
+.steps-line { display: flex; align-items: center; gap: 0; margin-bottom: 20px; }
+.sl {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--ink-3); white-space: nowrap;
+}
+.sl i {
+  width: 15px; height: 15px; flex: none; border-radius: 50%;
+  border: 1.5px solid var(--line-2); display: grid; place-items: center;
+  font-size: 9px; color: transparent; font-style: normal;
+}
+.sl.done  { color: var(--ink-2); }
+.sl.done i  { border-color: var(--sage); background: var(--sage); color: #fff; }
+.sl.now   { color: var(--ink); font-weight: 500; }
+.sl.now i   { border-color: var(--ink); border-style: dashed; }
+.sl-bar { flex: 1; height: 1px; background: var(--line); margin: 0 12px; min-width: 18px; }
+
+/* ---------- 查证列表 ---------- */
+.probe {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  overflow: hidden;
+}
+.probe-head {
+  padding: 11px 16px; border-bottom: 1px solid var(--line);
+  font-size: 12px; font-weight: 600; color: var(--ink-2);
+  letter-spacing: 0.03em; display: flex; align-items: center; gap: 8px;
+}
+.probe-row {
+  display: grid; grid-template-columns: 96px 1fr auto;
+  gap: 14px; align-items: baseline;
+  padding: 11px 16px; border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.probe-row:last-child { border-bottom: none; }
+.probe-what { color: var(--ink-2); }
+.probe-out  { color: var(--ink); }
+.probe-out em { font-style: normal; color: var(--ink-3); }
+.probe-st { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.probe-st.ok  { color: var(--sage); }
+.probe-st.run { color: var(--amber); }
+
+/* ---------- 计划头 ---------- */
+.plan-head { margin-bottom: 16px; }
+.plan-head h2 {
+  margin: 0 0 10px; font-size: 20px; font-weight: 600;
+  letter-spacing: -0.015em; line-height: 1.3;
+}
+.plan-facts { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); }
+.plan-facts b { color: var(--ink); font-weight: 500; }
+
+/* ---------- 提示条 ---------- */
+.note {
+  display: flex; gap: 9px; align-items: flex-start;
+  padding: 10px 14px; border-radius: var(--r-ctl);
+  font-size: 12.5px; line-height: 1.5; margin-bottom: 18px;
+}
+.note svg { flex: none; margin-top: 2px; }
+.note.fresh { background: var(--surface-2); color: var(--ink-2); }
+.note.ask   { background: var(--rose-soft); color: var(--rose); }
+.note.warn  { background: var(--amber-soft); color: var(--amber); }
+
+/* ---------- 阶段与步骤 ---------- */
+.phase { margin-bottom: 22px; }
+.phase-head {
+  display: flex; align-items: baseline; gap: 9px;
+  padding-bottom: 8px; margin-bottom: 2px;
+  border-bottom: 1px solid var(--line-2);
+}
+.phase-n {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--ink-3); letter-spacing: 0.04em;
+}
+.phase-name { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+.phase-cnt { margin-left: auto; font-size: 12px; color: var(--ink-3); }
+
+.step {
+  display: grid; grid-template-columns: 34px 1fr;
+  gap: 12px; padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.step:last-child { border-bottom: none; }
+.step-id {
+  font-family: var(--mono); font-size: 11px; color: var(--ink-3);
+  padding-top: 2px;
+}
+.step-act { font-size: 13.5px; line-height: 1.5; }
+.step-tags {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;
+}
+.step-tags span {
+  font-size: 11.5px; color: var(--ink-3);
+  padding: 1px 7px; border-radius: 5px;
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.step-tags span.dep  { color: var(--rose);  background: var(--rose-soft);  border-color: #f2e2e4; }
+.step-tags span.src  { color: var(--sage);  background: var(--sage-soft);  border-color: #e2ede5; }
+
+/* ---------- 底部动作 ---------- */
+.foot {
+  display: flex; gap: 8px; align-items: center;
+  margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line);
+}
+.foot .spacer { margin-left: auto; }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; font: inherit; font-size: 13px;
+  border-radius: var(--r-ctl); cursor: pointer;
+  border: 1px solid var(--line-2); background: var(--surface); color: var(--ink);
+}
+.btn.primary { background: var(--ink); border-color: var(--ink); color: #fff; font-weight: 500; }
+.btn.quiet   { border-color: transparent; background: none; color: var(--ink-2); }
+
+.legend {
+  max-width: 1180px; margin: 8px auto 60px; padding: 0 28px;
+  font-size: 12px; color: var(--ink-3); line-height: 1.7;
+}
+.legend b { color: var(--ink-2); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="sheet-head">
+  <h1>Cairn · 界面改版 demo</h1>
+  <p>一板图纸，三个状态。方向：<code>极浅底 + 纯白面 + 发丝线 + 近黑主色 + 低饱和点缀</code>。先看结构，细节后续调。</p>
+</div>
+
+<!-- ============================================================
+     状态 A —— 空
+     ============================================================ -->
+<div class="stage">
+  <div class="stage-label"><b>A · 空状态</b><span>唯一的主行动：说一句你想做什么</span></div>
+  <div class="frame">
+    <aside class="rail">
+      <div class="brand-row">
+        <div class="brand">
+          <svg class="brand-mark" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+            <rect width="24" height="24" rx="7.5" fill="#1b1a18"/>
+            <ellipse cx="12" cy="16.8" rx="5.6" ry="2.7" fill="#fff"/>
+            <ellipse cx="12" cy="12.2" rx="4.2" ry="2.3" fill="#fff"/>
+            <ellipse cx="12" cy="8.3" rx="2.7" ry="1.8" fill="#fff"/>
+          </svg>
+          <div class="brand-text">
+            <div class="brand-name">Cairn</div>
+            <div class="brand-sub">任务规划助手</div>
+          </div>
+        </div>
+        <button class="rail-toggle" type="button" aria-label="折叠侧栏" title="折叠侧栏">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <rect x="1.5" y="2.8" width="13" height="10.4" rx="3" stroke="currentColor" stroke-width="1.35"/>
+            <path d="M6.2 2.8v10.4" stroke="currentColor" stroke-width="1.35"/>
+          </svg>
+        </button>
+      </div>
+      <button class="rail-btn" type="button">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v10M1 6h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="rail-btn-text">新建任务</span>
+      </button>
+      <div class="rail-group">
+        <h3>最近</h3>
+        <div class="rail-empty">还没有规划记录</div>
+      </div>
+      <div class="rail-foot">
+        <div class="k">数据源</div>
+        <div class="v"><i></i><span class="v-text">天气 · 景点库 · 汇率 已就绪</span></div>
+      </div>
+    </aside>
+
+    <main class="canvas narrow">
+      <div class="hero">
+        <h1>想去哪？想做什么？</h1>
+        <p>说一句就够了。它会先查证数据，再给出带依赖顺序的执行计划。</p>
+      </div>
+      <div class="ask">
+        <input placeholder="周末去成都玩两天，带小孩，人均预算 1000">
+        <button>
+          开始规划
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 6h8M7 3l3 3-3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <div class="chips">
+        <button>周末去成都玩两天，带小孩</button>
+        <button>这周末杭州，两个人</button>
+        <button>预算 500 去日本 7 天</button>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ============================================================
+     状态 B —— 进行中
+     ============================================================ -->
+<div class="stage">
+  <div class="stage-label"><b>B · 进行中</b><span>把「机器在做什么」翻译成人话 —— 不再出现轮次/预算/函数名</span></div>
+  <div class="frame">
+    <aside class="rail">
+      <div class="brand-row">
+        <div class="brand">
+          <svg class="brand-mark" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+            <rect width="24" height="24" rx="7.5" fill="#1b1a18"/>
+            <ellipse cx="12" cy="16.8" rx="5.6" ry="2.7" fill="#fff"/>
+            <ellipse cx="12" cy="12.2" rx="4.2" ry="2.3" fill="#fff"/>
+            <ellipse cx="12" cy="8.3" rx="2.7" ry="1.8" fill="#fff"/>
+          </svg>
+          <div class="brand-text">
+            <div class="brand-name">Cairn</div>
+            <div class="brand-sub">任务规划助手</div>
+          </div>
+        </div>
+        <button class="rail-toggle" type="button" aria-label="折叠侧栏" title="折叠侧栏">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <rect x="1.5" y="2.8" width="13" height="10.4" rx="3" stroke="currentColor" stroke-width="1.35"/>
+            <path d="M6.2 2.8v10.4" stroke="currentColor" stroke-width="1.35"/>
+          </svg>
+        </button>
+      </div>
+      <button class="rail-btn" type="button">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v10M1 6h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="rail-btn-text">新建任务</span>
+      </button>
+      <div class="rail-group">
+        <h3>最近</h3>
+        <div class="rail-item active"><span class="dot"></span><span class="rail-item-text">成都 · 2 天</span><span class="rail-item-initial">成</span></div>
+        <div class="rail-item"><span class="dot"></span><span class="rail-item-text">杭州 · 周末</span><span class="rail-item-initial">杭</span></div>
+      </div>
+      <div class="rail-foot">
+        <div class="k">数据源</div>
+        <div class="v"><i></i><span class="v-text">天气 · 景点库 · 汇率 已就绪</span></div>
+      </div>
+    </aside>
+
+    <main class="canvas">
+      <div class="echo">
+        <div class="echo-task">成都 · 2 天</div>
+        <div class="echo-meta">
+          <span class="tag">带小孩</span>
+          <span class="tag">人均 ¥1000</span>
+          <span class="tag">10-03 出发</span>
+        </div>
+      </div>
+
+      <div class="steps-line">
+        <span class="sl done"><i>✓</i>理解任务</span>
+        <span class="sl-bar"></span>
+        <span class="sl now"><i></i>查证数据</span>
+        <span class="sl-bar"></span>
+        <span class="sl"><i></i>编排计划</span>
+      </div>
+
+      <div class="probe">
+        <div class="probe-head">
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.4"/><path d="M6 3.4v3M6 8.2v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          已查证 3 项
+        </div>
+        <div class="probe-row">
+          <span class="probe-what">天气</span>
+          <span class="probe-out">10-03 起 3 天，多云 18–26°C <em>· 10-04 有小雨</em></span>
+          <span class="probe-st ok">已完成</span>
+        </div>
+        <div class="probe-row">
+          <span class="probe-what">景点库</span>
+          <span class="probe-out">匹配到 12 个亲子景点，人均 ¥0–180</span>
+          <span class="probe-st ok">已完成</span>
+        </div>
+        <div class="probe-row">
+          <span class="probe-what">城际交通</span>
+          <span class="probe-out">上海 → 成都，高铁 8.2h / ¥917</span>
+          <span class="probe-st run">查询中</span>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ============================================================
+     状态 C —— 完成
+     ============================================================ -->
+<div class="stage">
+  <div class="stage-label"><b>C · 完成</b><span>计划是主角：目标最大，元信息退后，步骤可扫读</span></div>
+  <div class="frame">
+    <aside class="rail">
+      <div class="brand-row">
+        <div class="brand">
+          <svg class="brand-mark" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+            <rect width="24" height="24" rx="7.5" fill="#1b1a18"/>
+            <ellipse cx="12" cy="16.8" rx="5.6" ry="2.7" fill="#fff"/>
+            <ellipse cx="12" cy="12.2" rx="4.2" ry="2.3" fill="#fff"/>
+            <ellipse cx="12" cy="8.3" rx="2.7" ry="1.8" fill="#fff"/>
+          </svg>
+          <div class="brand-text">
+            <div class="brand-name">Cairn</div>
+            <div class="brand-sub">任务规划助手</div>
+          </div>
+        </div>
+        <button class="rail-toggle" type="button" aria-label="折叠侧栏" title="折叠侧栏">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <rect x="1.5" y="2.8" width="13" height="10.4" rx="3" stroke="currentColor" stroke-width="1.35"/>
+            <path d="M6.2 2.8v10.4" stroke="currentColor" stroke-width="1.35"/>
+          </svg>
+        </button>
+      </div>
+      <button class="rail-btn" type="button">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v10M1 6h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="rail-btn-text">新建任务</span>
+      </button>
+      <div class="rail-group">
+        <h3>最近</h3>
+        <div class="rail-item active"><span class="dot"></span><span class="rail-item-text">成都 · 2 天</span><span class="rail-item-initial">成</span></div>
+        <div class="rail-item"><span class="dot"></span><span class="rail-item-text">杭州 · 周末</span><span class="rail-item-initial">杭</span></div>
+      </div>
+      <div class="rail-foot">
+        <div class="k">数据源</div>
+        <div class="v"><i></i><span class="v-text">天气 · 景点库 · 汇率 已就绪</span></div>
+      </div>
+    </aside>
+
+    <main class="canvas">
+      <div class="plan-head">
+        <h2>10-03 至 10-04 带小孩去成都玩两天，人均预算 ¥1000</h2>
+        <div class="plan-facts">
+          <span><b>3</b> 个阶段</span>
+          <span><b>14</b> 个步骤</span>
+          <span>总计 <b>约 2 天</b></span>
+          <span>预估 <b>¥947</b> / 人</span>
+        </div>
+      </div>
+
+      <div class="note fresh">
+        <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.4"/><path d="M6 5.2v3M6 3.4v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        <span>门票与开放时间为 2026-10 核对的演示数据，出行前请以景区官方渠道为准。天气为 10-03 实时预报。</span>
+      </div>
+
+      <div class="phase">
+        <div class="phase-head">
+          <span class="phase-n">01</span>
+          <span class="phase-name">行前准备</span>
+          <span class="phase-cnt">3 步</span>
+        </div>
+        <div class="step">
+          <span class="step-id">S1</span>
+          <div>
+            <div class="step-act">确认出行日期为 10-03 至 10-04，定下 2 天 1 晚</div>
+            <div class="step-tags"><span>10 min</span><span>行程日期</span></div>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-id">S2</span>
+          <div>
+            <div class="step-act">查成都 10-03 起三天天气：多云 18–26°C，10-04 有小雨</div>
+            <div class="step-tags"><span class="src">天气 · 10-03 实时</span><span>3 天预报</span></div>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-id">S3</span>
+          <div>
+            <div class="step-act">上海 → 成都，高铁约 8.2 小时、¥917；飞机约 5.0 小时</div>
+            <div class="step-tags"><span class="src">城际交通</span><span class="dep">依赖 S1</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-head">
+          <span class="phase-n">02</span>
+          <span class="phase-name">行程执行</span>
+          <span class="phase-cnt">5 步</span>
+        </div>
+        <div class="step">
+          <span class="step-id">S4</span>
+          <div>
+            <div class="step-act">上午去成都大熊猫繁育研究基地，07:30 开园，建议早到</div>
+            <div class="step-tags"><span class="src">景点库 · 亲子</span><span class="dep">依赖 S2</span><span>3.5 h</span><span>¥55</span></div>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-id">S5</span>
+          <div>
+            <div class="step-act">下午逛成都博物馆，周五周六延长至 20:30，<b>周一闭馆</b></div>
+            <div class="step-tags"><span class="src">实时核对 · 10-04</span><span class="dep">依赖 S4</span><span>2 h</span><span>免费</span></div>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-id">S6</span>
+          <div>
+            <div class="step-act">宽窄巷子，预留弹性时间，10-04 有小雨备室内方案</div>
+            <div class="step-tags"><span class="src">景点库</span><span class="dep">依赖 S5</span><span>2 h</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="note warn">
+        <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><path d="M6 1.6l4.6 8H1.4l4.6-8z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6 5v2M6 8.4v.1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        <span>10-04 预报有小雨，熊猫基地户外区域体验会受影响，已备室内替代方案（S6）。</span>
+      </div>
+
+      <div class="foot">
+        <button class="btn primary">导出为 Markdown</button>
+        <button class="btn">复制</button>
+        <span class="spacer"></span>
+        <button class="btn quiet">重新规划</button>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ============================================================
+     状态 D —— 侧栏折叠
+     ============================================================ -->
+<div class="stage">
+  <div class="stage-label"><b>D · 侧栏折叠</b><span>208px → 60px：标记 + 首字方块，把宽度让给正文。上方按钮可点，四个状态都能折叠</span></div>
+  <div class="frame collapsed">
+    <aside class="rail">
+      <div class="brand-row">
+        <div class="brand">
+          <svg class="brand-mark" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+            <rect width="24" height="24" rx="7.5" fill="#1b1a18"/>
+            <ellipse cx="12" cy="16.8" rx="5.6" ry="2.7" fill="#fff"/>
+            <ellipse cx="12" cy="12.2" rx="4.2" ry="2.3" fill="#fff"/>
+            <ellipse cx="12" cy="8.3" rx="2.7" ry="1.8" fill="#fff"/>
+          </svg>
+          <div class="brand-text">
+            <div class="brand-name">Cairn</div>
+            <div class="brand-sub">任务规划助手</div>
+          </div>
+        </div>
+        <button class="rail-toggle" type="button" aria-label="展开侧栏" title="展开侧栏">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <rect x="1.5" y="2.8" width="13" height="10.4" rx="3" stroke="currentColor" stroke-width="1.35"/>
+            <path d="M6.2 2.8v10.4" stroke="currentColor" stroke-width="1.35"/>
+          </svg>
+        </button>
+      </div>
+      <button class="rail-btn" type="button" title="新建任务">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v10M1 6h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="rail-btn-text">新建任务</span>
+      </button>
+      <div class="rail-group">
+        <h3>最近</h3>
+        <div class="rail-item active" title="成都 · 2 天"><span class="dot"></span><span class="rail-item-text">成都 · 2 天</span><span class="rail-item-initial">成</span></div>
+        <div class="rail-item" title="杭州 · 周末"><span class="dot"></span><span class="rail-item-text">杭州 · 周末</span><span class="rail-item-initial">杭</span></div>
+      </div>
+      <div class="rail-foot">
+        <div class="k">数据源</div>
+        <div class="v" title="天气 · 景点库 · 汇率 已就绪"><i></i><span class="v-text">天气 · 景点库 · 汇率 已就绪</span></div>
+      </div>
+    </aside>
+
+    <main class="canvas">
+      <div class="plan-head">
+        <h2>10-03 至 10-04 带小孩去成都玩两天，人均预算 ¥1000</h2>
+        <div class="plan-facts">
+          <span><b>3</b> 个阶段</span>
+          <span><b>14</b> 个步骤</span>
+          <span>总计 <b>约 2 天</b></span>
+          <span>预估 <b>¥947</b> / 人</span>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-head">
+          <span class="phase-n">01</span>
+          <span class="phase-name">行前准备</span>
+          <span class="phase-cnt">3 步</span>
+        </div>
+        <div class="step">
+          <span class="step-id">S1</span>
+          <div>
+            <div class="step-act">确认出行日期为 10-03 至 10-04，定下 2 天 1 晚</div>
+            <div class="step-tags"><span>10 min</span><span>行程日期</span></div>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-id">S2</span>
+          <div>
+            <div class="step-act">查成都 10-03 起三天天气：多云 18–26°C，10-04 有小雨</div>
+            <div class="step-tags"><span class="src">天气 · 10-03 实时</span><span>3 天预报</span></div>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-id">S3</span>
+          <div>
+            <div class="step-act">上海 → 成都，高铁约 8.2 小时、¥917；飞机约 5.0 小时</div>
+            <div class="step-tags"><span class="src">城际交通</span><span class="dep">依赖 S1</span></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="legend">
+  <p style="margin:0 0 14px">
+    <b>名字 · Cairn</b> /kern/ —— 徒步时用石头堆起的路标。它和这个项目是同一件事：
+    <b>一块一块垒起来</b>（每个事实都经工具查证）、<b>只用手里真有的石头</b>（查不到就说查不到，绝不编造）、
+    立在<b>不熟悉的地形</b>里（任务越模糊越要先澄清）。名字在 AI 领域已验证无撞名。
+  </p>
+  <b>这一版改了什么：</b>① 进度不再输出「轮次≤8 · 工具≤12 / 预算 1/12 / get_weather_forecast」这类内部实现，换成「已查证 3 项 + 人话结果」；
+  ② 主色从高饱和蓝换成近黑，玫瑰色只留给「需要你注意」；③ 去掉卡片套卡片，用发丝线和留白分区；
+  ④ 步骤改为「编号 + 动作 + 标签」的扫读结构，依赖关系从裸 ID 变成可读的「依赖 S2」；
+  ⑤ 补上左侧栏，让「最近的任务」有地方待 —— 现在重开一次就全丢了；
+  ⑥ 侧栏可折叠（品牌行右侧按钮），208px → 60px：品牌只留标记，新建任务收成图标，
+  历史条目收成<b>首字方块</b>（认得出是哪个任务，只留圆点会认不出），把宽度让给计划正文。
+</div>
+
+<script>
+// 图纸里的折叠按钮是可以真的点的 —— 直接感受一下交互，不用靠想象
+document.addEventListener('click', (event) => {
+  const btn = event.target.closest('.rail-toggle');
+  if (!btn) return;
+  const frame = btn.closest('.frame');
+  const collapsed = frame.classList.toggle('collapsed');
+  btn.setAttribute('aria-label', collapsed ? '展开侧栏' : '折叠侧栏');
+  btn.setAttribute('title', collapsed ? '展开侧栏' : '折叠侧栏');
+});
+</script>
+
+</body>
+</html>

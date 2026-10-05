@@ -73,6 +73,19 @@ def _offline_rate(src: str, dst: str) -> float | None:
     return src_cny / dst_cny
 
 
+def summarize_currency(data: dict[str, Any]) -> str:
+    """形如：``1000 CNY = 140.2 USD``。"""
+    amount, src, dst, result = (
+        data.get("amount"),
+        data.get("from"),
+        data.get("to"),
+        data.get("result"),
+    )
+    if amount is None or not src or not dst or result is None:
+        return ""
+    return f"{amount:g} {src} = {result:g} {dst}"
+
+
 @register(
     name="convert_currency",
     description=(
@@ -82,6 +95,7 @@ def _offline_rate(src: str, dst: str) -> float | None:
     params_model=CurrencyParams,
     idempotent=True,
     tags=["外部API", "换算"],
+    summarize=summarize_currency,
 )
 def convert_currency(params: CurrencyParams) -> ToolResult:
     src, dst = params.from_currency, params.to_currency

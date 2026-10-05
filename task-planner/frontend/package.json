@@ -3,9 +3,10 @@
   "private": true,
   "version": "0.3.0",
   "type": "module",
-  "description": "任务规划助手前端 —— 输入需求，实时看进度，拿到结构化计划",
+  "description": "Cairn 前端 —— 输入需求，实时看进度，拿到结构化计划",
   "scripts": {
     "dev": "vite",
+    "dev:all": "node ../scripts/dev.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"

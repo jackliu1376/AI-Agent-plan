@@ -19,6 +19,19 @@ Web 场景和 CLI 有三个根本差异：
 - 多个订阅者（虽然当前场景只有一个）
 - 断线重连后从头重放
 - 心跳保活（避免代理掐断空闲连接）
+
+内存与磁盘
+----------
+会话有**两份**：内存里的活对象（跑得快、能挂协程、能推事件），
+和磁盘上的行（``web/session_db.py``，跑得慢但重启还在）。
+
+分工是这样的：
+
+- **内存是主，磁盘是备份。** 事件推送、澄清挂起全走内存。
+- **状态跃迁时写盘**（不是每个事件都写），见 ``Session._persist``。
+- **内存未命中就回磁盘捞。** 于是「重启后点开一条旧记录」也成立。
+- **TTL 回收只清内存，不删盘。** 磁盘有自己的容量上限（``MAX_ROWS``）。
+  两者语义不同：内存回收是「暂时不用了」，删除是「用户不要了」。
 """
 
 from __future__ import annotations
@@ -26,13 +39,33 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from agent.events import Event
 
-SessionStatus = Literal["pending", "running", "awaiting_input", "done", "failed"]
+SessionStatus = Literal[
+    "pending",
+    "running",
+    "awaiting_input",
+    "done",
+    "failed",
+    # 进程重启 / 崩溃导致没跑完。不是模型的问题，也不是用户取消，
+    # 单独一个状态是为了如实说明原因，而不是含糊地报「失败」。
+    "interrupted",
+]
+
+# 非终态：进程退出时若还停在这些状态，说明这次运行被中断了。
+LIVE_STATUSES: frozenset[str] = frozenset({"pending", "running", "awaiting_input"})
+
+FINISHED_STATUSES: frozenset[str] = frozenset({"done", "failed", "interrupted"})
+
+# 事件流里表示「可以收尾」的类型。重放历史事件时必须有其中一条，
+# 否则重连的前端会一直等下去（它靠这两个事件判断任务结束）。
+TERMINAL_EVENT_TYPES: frozenset[str] = frozenset({"plan_ready", "error"})
+
+INTERRUPTED_MESSAGE = "服务重启，这次规划被中断了。"
 
 # 心跳间隔（秒）。SSE 连接空闲太久会被中间代理掐断，定期发注释行保活。
 HEARTBEAT_SECONDS = 15.0
@@ -61,6 +94,11 @@ class Session:
     created_at: float = field(default_factory=time.monotonic)
     updated_at: float = field(default_factory=time.monotonic)
 
+    # 墙上时钟。TTL 用 monotonic（不受系统改时间影响，是正确做法），
+    # 但「最近」列表要按真实时间排序并展示给用户，只能存 time.time()。
+    # 两个时间戳各司其职，不要合并。
+    created_wall: float = field(default_factory=time.time)
+
     # 事件按顺序保留，供晚连上 / 重连的客户端重放
     events: list[dict[str, Any]] = field(default_factory=list)
     result: dict[str, Any] | None = None
@@ -72,15 +110,22 @@ class Session:
     # 用户超时未答（此时 run 会带着「按假设继续」的指令恢复）
     timed_out: bool = False
 
+    # 已被显式删除。置位后禁止再落盘 —— 取消是「先 drop 再 cancel 任务」，
+    # 而任务收到 CancelledError 后还会 set_status("failed")，
+    # 不拦的话会把刚删掉的那一行又写回去。
+    dropped: bool = False
+
     _condition: asyncio.Condition = field(default_factory=asyncio.Condition, repr=False)
     _answer_future: asyncio.Future[str] | None = field(default=None, repr=False)
     _early_answer: str | None = field(default=None, repr=False)
+    # 由 SessionStore 注入：把当前状态写盘。不注入就纯内存运行。
+    _on_change: Callable[[], None] | None = field(default=None, repr=False)
 
     # -- 状态 -------------------------------------------------------------
 
     @property
     def is_finished(self) -> bool:
-        return self.status in ("done", "failed")
+        return self.status in FINISHED_STATUSES
 
     @property
     def age_seconds(self) -> float:
@@ -92,6 +137,22 @@ class Session:
             self.status = status
             self.updated_at = time.monotonic()
             self._condition.notify_all()
+        # 落盘放在锁外：持锁时做磁盘 I/O 会把所有订阅者一起卡住。
+        self._persist()
+
+    def _persist(self) -> None:
+        """把当前状态同步给持有者。**绝不抛异常**。
+
+        只在状态跃迁时调用（``set_status``），不在每个事件上调用：
+        一次运行有 10–30 个事件，每个都写盘是明显的写放大，
+        而状态跃迁已经覆盖了所有「崩溃后再看要有意义」的时点。
+        """
+        if self.dropped or self._on_change is None:
+            return
+        try:
+            self._on_change()
+        except Exception:  # noqa: BLE001 - 持久化是旁路，不能影响主流程
+            pass
 
     # -- 事件 -------------------------------------------------------------
 
@@ -182,13 +243,22 @@ class Session:
 
 
 class SessionStore:
-    """内存会话表 + TTL 回收。
+    """内存会话表 + TTL 回收 + 可选的磁盘后备。
 
-    单机够用。要多实例部署时把这里换成 Redis 即可，接口不变。
+    单机够用。要多实例部署时把内存表换成 Redis 即可，接口不变
+    （但那时磁盘后备也得换成共享存储，否则多实例各写各的库）。
+
+    ``db`` 不传就是纯内存 —— 测试和 ``SESSION_DB_ENABLED=0`` 走这条路。
 
     ``on_evict`` 回调很关键：**回收会话时必须同时取消它的后台任务**。
     只删字典条目的话，卡在 ``awaiting_input`` 的协程仍挂在 Future 上永不退出，
     形成协程 + 内存双重泄漏。
+
+    「回收」与「删除」是两件事，别混：
+
+    - ``_evict`` 只从内存摘掉（TTL / 超上限）。磁盘那行留着，
+      下次 ``get`` 还能捞回来。
+    - ``drop`` 是用户明确不要了，内存和磁盘一起清。
     """
 
     def __init__(
@@ -196,11 +266,13 @@ class SessionStore:
         ttl_seconds: float = SESSION_TTL_SECONDS,
         max_sessions: int = 200,
         on_evict: Callable[[str], None] | None = None,
+        db: Any | None = None,
     ):
         self._sessions: dict[str, Session] = {}
         self._ttl = ttl_seconds
         self._max = max_sessions
         self._on_evict = on_evict
+        self._db = db
 
     def set_on_evict(self, callback: Callable[[str], None] | None) -> None:
         """注册回收钩子（在 store 创建之后才能拿到 app.state，所以单独设）。"""
@@ -212,18 +284,79 @@ class SessionStore:
 
     def create(self, task: str) -> Session:
         session = Session(id=uuid.uuid4().hex[:16], task=task)
+        session._on_change = lambda: self._save(session)
+        self._sessions[session.id] = session
+        self._evict()
+        # 立刻落一行：即便下一秒进程被杀，这条任务也不会凭空消失。
+        # 状态跃迁也会写，但「刚提交就崩」是最常见的一种崩。
+        self._save(session)
+        return session
+
+    def get(self, session_id: str) -> Session | None:
+        """先查内存，未命中再回磁盘捞。"""
+        session = self._sessions.get(session_id)
+        if session is not None:
+            return session
+        if self._db is None:
+            return None
+
+        record = self._db.load(session_id)
+        if record is None:
+            return None
+
+        session = _hydrate(record)
+        session._on_change = lambda: self._save(session)
         self._sessions[session.id] = session
         self._evict()
         return session
 
-    def get(self, session_id: str) -> Session | None:
-        return self._sessions.get(session_id)
+    def list(self, limit: int = 20) -> list[dict[str, Any]]:
+        """「最近」列表。有磁盘就以磁盘为准（它是全量的）。"""
+        if self._db is not None:
+            return self._db.list(limit)
+
+        ordered = sorted(
+            self._sessions.values(), key=lambda s: s.created_wall, reverse=True
+        )
+        size = max(1, limit)
+        return [
+            {
+                "session_id": s.id,
+                "task": s.task,
+                "status": s.status,
+                "created_at": s.created_wall,
+                "updated_at": s.created_wall,
+                "ok": session_ok(s),
+            }
+            for s in ordered[:size]
+        ]
+
+    def mark_interrupted(self) -> int:
+        """启动时把上次遗留的非终态会话标成中断。返回处理条数。"""
+        if self._db is None:
+            return 0
+        return self._db.mark_interrupted(INTERRUPTED_MESSAGE)
 
     def drop(self, session_id: str) -> bool:
-        removed = self._sessions.pop(session_id, None) is not None
-        if removed:
+        """彻底删除（内存 + 磁盘）。返回是否真的删掉了什么。"""
+        session = self._sessions.pop(session_id, None)
+        if session is not None:
+            # 置位后再取消任务：否则任务收到 CancelledError 后的
+            # set_status("failed") 会把这一行重新写回磁盘。
+            session.dropped = True
+
+        deleted = self._db.delete(session_id) if self._db is not None else False
+        if session is not None or deleted:
             self._notify_evicted(session_id)
-        return removed
+            return True
+        return False
+
+    # -- 内部 -------------------------------------------------------------
+
+    def _save(self, session: Session) -> None:
+        if self._db is None or session.dropped:
+            return
+        self._db.save(session)  # SessionDB.save 自己吞异常
 
     def _notify_evicted(self, session_id: str) -> None:
         if self._on_evict is not None:
@@ -233,7 +366,12 @@ class SessionStore:
                 pass
 
     def _evict(self) -> int:
-        """回收超时会话；若仍超出上限，按最旧优先淘汰。"""
+        """回收超时会话；若仍超出上限，按最旧优先淘汰。
+
+        **只清内存，不动磁盘。** 磁盘的容量由 ``SessionDB.MAX_ROWS`` 管，
+        语义是「太久远的记录可以丢」；而内存回收的语义是「这段时间没人看，
+        先放掉」—— 两者不是一回事。
+        """
         stale = [sid for sid, s in self._sessions.items() if s.age_seconds > self._ttl]
         for sid in stale:
             del self._sessions[sid]
@@ -251,3 +389,65 @@ class SessionStore:
     @property
     def size(self) -> int:
         return len(self._sessions)
+
+
+# ---------------------------------------------------------------------------
+# 磁盘记录 -> Session
+# ---------------------------------------------------------------------------
+
+
+def session_ok(session: Session) -> bool | None:
+    """这次规划成功了没有。``None`` 表示**还没结论**（还在跑）。
+
+    三种取值都要保留，不能塌成 bool：
+
+    - ``True``  跑完且产出了合规计划
+    - ``False`` 跑完了但没成功，或者压根没跑完（failed / interrupted）
+    - ``None``  还在跑 —— 前端该显示灰色圆点，而不是红色
+    """
+    if session.status in ("failed", "interrupted"):
+        return False
+    if session.status != "done":
+        return None
+    result = session.result
+    if isinstance(result, dict) and isinstance(result.get("ok"), bool):
+        return result["ok"]
+    # done 但没产出计划（模型输出不合规）—— 算没成功
+    return False
+
+
+def _hydrate(record: dict[str, Any]) -> Session:
+    """把一行磁盘记录还原成可用的 Session。
+
+    两个必须处理的细节：
+
+    1. **非终态一律降级为 interrupted。** 磁盘上写着 running，但持有它的
+       进程已经没了（否则内存里就该有它）。如实说「被中断了」，
+       比假装还在跑要好 —— 后者会让用户一直等一个永远不会来的结果。
+    2. **补一条终止事件。** 前端靠 plan_ready / error 判断「可以收尾了」。
+       缺了它，重连会一直重试到上限，最后报一句「连接中断」，
+       用户根本不知道发生了什么。
+    """
+    events = [e for e in (record.get("events") or []) if isinstance(e, dict)]
+    status: str = record.get("status") or "failed"
+    error = record.get("error")
+
+    if status in LIVE_STATUSES:
+        status = "interrupted"
+        error = error or INTERRUPTED_MESSAGE
+
+    if status in FINISHED_STATUSES and not any(
+        e.get("type") in TERMINAL_EVENT_TYPES for e in events
+    ):
+        events.append(Event("error", {"message": error or INTERRUPTED_MESSAGE}).to_dict())
+
+    return Session(
+        id=record["session_id"],
+        task=record.get("task", ""),
+        status=status,  # type: ignore[arg-type]
+        created_wall=float(record.get("created_at") or time.time()),
+        events=events,
+        result=record.get("result"),
+        error=error,
+        clarification=record.get("clarification"),
+    )

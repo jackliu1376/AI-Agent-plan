@@ -14,6 +14,7 @@
 import type {
   CreateSessionResponse,
   PlanEvent,
+  SessionListResponse,
   SessionView,
   ToolsResponse,
 } from './types'
@@ -64,11 +65,27 @@ export function getSession(sessionId: string): Promise<SessionView> {
   return request<SessionView>(`/sessions/${sessionId}`)
 }
 
+/**
+ * 「最近」列表。
+ *
+ * 数据源在服务端（`logs/sessions.db`）而不是 localStorage —— 这样刷新页面、
+ * 重启服务、甚至换一个浏览器，看到的历史都是同一份，而且列表里的每一条
+ * 都确实还能打开。
+ */
+export function listSessions(limit = 20): Promise<SessionListResponse> {
+  return request<SessionListResponse>(`/sessions?limit=${limit}`)
+}
+
 export function submitAnswer(sessionId: string, answer: string): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>(`/sessions/${sessionId}/answers`, {
     method: 'POST',
     body: JSON.stringify({ answer }),
   })
+}
+
+/** 结束并清理会话。运行中调用即为「取消」。 */
+export function deleteSession(sessionId: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/sessions/${sessionId}`, { method: 'DELETE' })
 }
 
 export function listTools(): Promise<ToolsResponse> {

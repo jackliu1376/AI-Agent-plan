@@ -233,6 +233,24 @@ class _TextExtractor(HTMLParser):
 # ---------------------------------------------------------------------------
 
 
+def summarize_web(data: dict[str, Any]) -> str:
+    """形如：``成都旅游攻略_马蜂窝（3,200 字）``。
+
+    标题拿不到时退回域名 —— 比显示「(无标题)」有用。
+    """
+    title = str(data.get("title") or "").strip()
+    if not title or title == "(无标题)":
+        url = str(data.get("url") or "")
+        title = urlparse(url).netloc if url else ""
+    if not title:
+        return ""
+
+    total = data.get("total_chars")
+    if isinstance(total, int) and total > 0:
+        return f"{title}（{total:,} 字）"
+    return title
+
+
 @register(
     name="fetch_webpage",
     description=(
@@ -243,6 +261,7 @@ class _TextExtractor(HTMLParser):
     params_model=WebParams,
     idempotent=True,
     tags=["外部API", "网页"],
+    summarize=summarize_web,
 )
 def fetch_webpage(params: WebParams) -> ToolResult:
     netloc = urlparse(params.url).netloc

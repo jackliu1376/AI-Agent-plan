@@ -15,15 +15,21 @@ from __future__ import annotations
 
 import os
 
+from common.console import ensure_safe_stdio
+
 
 def main() -> None:
     import uvicorn
+
+    # 必须在任何 print 之前 —— Windows 控制台是 GBK，emoji 编码不了会抛
+    # UnicodeEncodeError 让服务直接起不来。
+    ensure_safe_stdio()
 
     host = os.getenv("WEB_HOST", "127.0.0.1")
     port = int(os.getenv("WEB_PORT", "8000"))
     reload = os.getenv("WEB_RELOAD") == "1"
 
-    print(f"🚀 任务规划助手 API → http://{host}:{port}")
+    print(f"🚀 Cairn · 任务规划助手 API → http://{host}:{port}")
     print(f"   接口文档         → http://{host}:{port}/docs")
     uvicorn.run("web.app:app", host=host, port=port, reload=reload)
 

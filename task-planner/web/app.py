@@ -21,6 +21,12 @@
 - ``DEEPSEEK_API_KEY`` 只存在于服务端，绝不下发到前端。
 - 按 IP 限流，防止被刷爆额度。
 - 会话有 TTL 与数量上限，防止内存无限增长。
+
+持久化
+------
+会话在状态跃迁时落盘到 ``logs/sessions.db``（见 ``web/session_db.py``），
+因此「最近」列表里的记录在服务重启后依然打得开。
+``SESSION_DB_ENABLED=0`` 可关掉，退回纯内存。
 """
 
 from __future__ import annotations
@@ -47,6 +53,7 @@ from agent.run_log import record_run, settings_params
 from agent.tool_runner import LocalToolRunner
 from mcp_server.tools.base import load_all_tools, openai_tool_schemas
 from web.session import Session, SessionStore
+from web.session_db import SessionDB, is_enabled
 
 LLMFactory = Callable[[Settings], Any]
 
@@ -82,6 +89,25 @@ class SessionView(BaseModel):
     result: dict[str, Any] | None = None
     error: str | None = None
     event_count: int
+    # 事件一并返回：从磁盘恢复一条旧记录时，前端要用它渲染「查证了 N 项」。
+    # 只给结果不给过程的话，恢复出来的页面会比刚跑完时少一块内容。
+    events: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SessionSummary(BaseModel):
+    """「最近」列表的一行。刻意不含 events / result —— 列表不需要正文。"""
+
+    session_id: str
+    task: str
+    status: str
+    created_at: float
+    updated_at: float
+    ok: bool | None = None
+
+
+class SessionListResponse(BaseModel):
+    count: int
+    sessions: list[SessionSummary]
 
 
 # ---------------------------------------------------------------------------
@@ -125,11 +151,21 @@ def _default_llm_factory(settings: Settings) -> Any:
     return DeepSeekClient(settings)
 
 
+def _default_db() -> SessionDB | None:
+    """按环境变量决定是否落盘。``SESSION_DB_ENABLED=0`` 时返回 None。
+
+    返回 None 而不是一个「假的空库」，是为了让调用方一眼看出
+    「这条路径上根本没有持久化」—— 比一个默默什么都不做的对象好排查。
+    """
+    return SessionDB() if is_enabled() else None
+
+
 def create_app(
     *,
     settings: Settings | None = None,
     llm_factory: LLMFactory | None = None,
     store: SessionStore | None = None,
+    db: SessionDB | None = None,
     rate_limit: int = 10,
     rate_window: float = 3600.0,
     janitor_interval: float = 60.0,
@@ -138,11 +174,18 @@ def create_app(
     """构建 FastAPI 应用。
 
     参数全部可注入，方便测试：测试里传 ``llm_factory`` 返回脚本化 LLM，
-    就能在不消耗 API 额度的前提下跑完整 HTTP + SSE 链路。
+    就能在不消耗 API 额度的前提下跑完整 HTTP + SSE 链路；
+    传 ``db=SessionDB(tmp_path / "s.db")`` 就能验证落盘与恢复。
+
+    ``store`` 和 ``db`` 二选一即可：给了 ``store`` 就完全按它来，
+    没给则按 ``db``（或环境变量）自建一个。
     """
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # 上次进程留下的「运行中」会话在这里被标成中断 —— 必须早于
+        # 任何一次读列表，否则「最近」里会出现点不开的僵尸记录。
+        _app.state.store.mark_interrupted()
         janitor = asyncio.create_task(_janitor_loop(_app, janitor_interval))
         try:
             yield
@@ -152,7 +195,7 @@ def create_app(
                 await janitor
 
     app = FastAPI(
-        title="任务规划助手 API",
+        title="Cairn API · 任务规划助手",
         version="0.2.0",
         description="把自然语言任务拆解为可执行计划。事件流走 SSE。",
         lifespan=lifespan,
@@ -160,7 +203,9 @@ def create_app(
 
     app.state.settings = settings or Settings.load()
     app.state.llm_factory = llm_factory or _default_llm_factory
-    app.state.store = store or SessionStore()
+    app.state.store = store or SessionStore(
+        db=db if db is not None else _default_db()
+    )
     app.state.limiter = RateLimiter(rate_limit, rate_window)
     app.state.tasks = {}  # session_id -> asyncio.Task，防止被 GC
     app.state.trust_proxy = trust_proxy
@@ -236,6 +281,25 @@ def create_app(
             answer_url=f"/api/sessions/{session.id}/answers",
         )
 
+    @app.get(
+        "/api/sessions",
+        response_model=SessionListResponse,
+        summary="最近会话",
+    )
+    async def list_sessions(
+        limit: int = Query(20, ge=1, le=100, description="最多返回多少条"),
+    ) -> Any:
+        """侧栏「最近」列表的数据源。
+
+        为什么放在服务端而不是浏览器 localStorage：
+
+        - 桌面版与浏览器打开的是同一个后端，历史该是同一份；
+        - 本地缓存的列表指向的会话可能已经不在了（重启 / 换机器），
+          服务端列表则天然是「真实存在的记录」。
+        """
+        sessions = app.state.store.list(limit=limit)
+        return SessionListResponse(count=len(sessions), sessions=sessions)
+
     @app.get("/api/sessions/{session_id}", response_model=SessionView, summary="查询会话")
     async def get_session(session_id: str) -> Any:
         session = _require(app, session_id)
@@ -247,6 +311,7 @@ def create_app(
             result=session.result,
             error=session.error,
             event_count=len(session.events),
+            events=session.events,
         )
 
     @app.get("/api/sessions/{session_id}/events", summary="订阅事件流（SSE）")
@@ -287,9 +352,10 @@ def create_app(
             raise HTTPException(status_code=409, detail="答案未被接受，请重试。")
         return {"ok": True, "session_id": session.id}
 
-    @app.delete("/api/sessions/{session_id}", summary="结束并清理会话")
+    @app.delete("/api/sessions/{session_id}", summary="删除会话（内存 + 磁盘）")
     async def delete_session(session_id: str) -> dict[str, Any]:
-        # drop() 会触发 on_evict 钩子，因此这里不需要单独 cancel
+        # drop() 会触发 on_evict 钩子，因此这里不需要单独 cancel。
+        # 注意这是**硬删除**：磁盘上那一行也会没。回收（TTL）则只清内存。
         dropped = app.state.store.drop(session_id)
         if not dropped:
             raise HTTPException(status_code=404, detail="会话不存在或已过期。")

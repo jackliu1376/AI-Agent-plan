@@ -42,6 +42,33 @@ def _isolate_amap_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AMAP_API_KEY", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_session_db(monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> None:
+    """测试默认**不写**会话库，避免污染仓库里的 logs/sessions.db。
+
+    默认关掉（而不是指到临时目录）是有意的：绝大多数测试关心的是
+    内存里的会话状态机，不希望多一条隐性的磁盘依赖。
+    要验证持久化的测试显式传 ``db=SessionDB(...)``，或用 ``session_db`` fixture。
+
+    路径用 ``getbasetemp()`` 而不是 ``mktemp()`` —— 后者每条用例都会
+    新建一个编号目录（pytest 只保留最近 3 个，其余要删），几百条用例
+    会产生大量临时目录读写。这里的路径只是「万一有人打开了开关」的兜底，
+    不需要独立目录。
+    """
+    monkeypatch.setenv("SESSION_DB_ENABLED", "0")
+    monkeypatch.setenv(
+        "SESSION_DB_PATH", str(tmp_path_factory.getbasetemp() / "sessions.db")
+    )
+
+
+@pytest.fixture
+def session_db(tmp_path: Path):
+    """一个指向临时目录的会话库，用完即弃。"""
+    from web.session_db import SessionDB
+
+    return SessionDB(tmp_path / "sessions.db")
+
+
 @pytest.fixture
 def run_log_path(tmp_path: Path) -> Path:
     """显式可用的运行记录路径（配合 ``record_run(path=...)``）。"""

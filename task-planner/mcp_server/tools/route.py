@@ -352,6 +352,38 @@ def _estimate_other(straight: float, mode: str) -> dict[str, object]:
     }
 
 
+MODE_NAMES_ZH = {
+    "hsr": "高铁",
+    "train": "火车",
+    "flight": "飞机",
+    "drive": "自驾",
+    "bus": "大巴",
+}
+
+
+def summarize_route(data: dict[str, Any]) -> str:
+    """形如：``上海 → 成都，高铁 8.2h / ¥917``。
+
+    用 ``in_vehicle_hours``（纯车程）而不是 ``duration_hours``（门到门）——
+    这里是「查到了什么」，不是「要花多久出门到进门」。
+    """
+    origin, destination = data.get("origin"), data.get("destination")
+    if not origin or not destination:
+        return ""
+
+    mode = MODE_NAMES_ZH.get(str(data.get("mode") or ""), str(data.get("mode") or ""))
+    bits: list[str] = []
+    hours = data.get("in_vehicle_hours")
+    if isinstance(hours, (int, float)) and hours > 0:
+        bits.append(f"{hours}h")
+    cost = data.get("estimated_cost")
+    if isinstance(cost, (int, float)) and cost > 0:
+        bits.append(f"¥{round(cost)}")
+
+    tail = f" {' / '.join(bits)}" if bits else ""
+    return f"{origin} → {destination}，{mode}{tail}"
+
+
 @register(
     name="estimate_route",
     description=(
@@ -368,6 +400,7 @@ def _estimate_other(straight: float, mode: str) -> dict[str, object]:
     params_model=RouteParams,
     idempotent=True,
     tags=["本地计算", "交通"],
+    summarize=summarize_route,
 )
 def estimate_route(params: RouteParams) -> ToolResult:
     # 用共享城市表解析，支持中文名 / 英文名 / 别名（如 New York -> 纽约）

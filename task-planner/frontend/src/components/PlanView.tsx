@@ -1,37 +1,56 @@
 /**
- * 计划渲染：阶段 → 步骤，带依赖关系与数据来源标注。
+ * 计划渲染。
  *
- * 依赖（depends_on）用高亮 tag 展示，让「哪些步骤能并行」一眼可见 ——
- * 这是计划质量的核心，用纯文本是看不出来的。
+ * 排版原则（对齐图纸）：**目标最大，元信息退后，步骤可扫读**。
+ * 依赖关系用可读标签（「依赖 S2」）而不是裸 ID 堆叠 ——
+ * 用户不该为了看懂依赖去回滚查找 S2 是什么。
  */
 
 import { useState } from 'react'
 import type { Plan, Step } from '../api/types'
+import { humanizeSource } from '../lib/toolLabels'
+
+const MAX_SOURCE_CHARS = 34
+
+function Icon({ kind }: { kind: 'info' | 'warn' | 'alert' }) {
+  if (kind === 'alert') {
+    return (
+      <svg width="13" height="13" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+        <path d="M6 1.6l4.6 8H1.4l4.6-8z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+        <path d="M6 5v2M6 8.4v.1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      </svg>
+    )
+  }
+  return (
+    <svg width="13" height="13" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M6 5.2v3M6 3.4v.1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  )
+}
 
 function StepRow({ step }: { step: Step }) {
+  // 模型会原样写工具名（`get_weather_forecast(city=...)`）。
+  // 保留参数（可追溯），把标识符换成人话。
+  const raw = step.data_source ?? ''
+  const source = humanizeSource(raw)
+  const shortSource =
+    source.length > MAX_SOURCE_CHARS ? `${source.slice(0, MAX_SOURCE_CHARS)}…` : source
+
   return (
     <div className="step">
-      <div className="step-id">{step.id}</div>
+      <span className="step-id">{step.id}</span>
       <div>
-        <div className="step-action">{step.action}</div>
+        <div className="step-act">{step.action}</div>
         <div className="step-tags">
-          {step.tool !== null && (
-            <span className="tag">
-              工具 <code>{step.tool}</code>
+          {source.length > 0 && (
+            <span className="src" title={raw}>
+              数据 {shortSource}
             </span>
           )}
-          {step.depends_on.length > 0 && (
-            <span className="tag dep">
-              依赖 <code>{step.depends_on.join(', ')}</code>
-            </span>
-          )}
-          {step.eta.length > 0 && <span className="tag">耗时 {step.eta}</span>}
-          {step.deliverable.length > 0 && <span className="tag">产出 {step.deliverable}</span>}
-          {step.data_source !== null && step.data_source.length > 0 && (
-            <span className="tag src">
-              数据 <code>{step.data_source}</code>
-            </span>
-          )}
+          {step.depends_on.length > 0 && <span className="dep">依赖 {step.depends_on.join('、')}</span>}
+          {step.eta.length > 0 && <span>耗时 {step.eta}</span>}
+          {step.deliverable.length > 0 && <span>产出 {step.deliverable}</span>}
         </div>
       </div>
     </div>
@@ -48,105 +67,106 @@ export function PlanView({ plan, markdown, stepCount }: Props) {
   const [showRaw, setShowRaw] = useState(false)
 
   return (
-    <section className="panel">
-      <div className="panel-head">
-        <h2>计划</h2>
-        <button type="button" className="raw-toggle" onClick={() => setShowRaw((v) => !v)}>
-          {showRaw ? '收起原文' : '查看 Markdown 原文'}
-        </button>
-      </div>
-
-      <div className="plan-summary">
-        <span>
-          步骤 <strong>{stepCount}</strong>
-        </span>
-        {plan.total_eta.length > 0 && (
+    <>
+      <div className="plan-head">
+        <h2>{plan.goal}</h2>
+        <div className="plan-facts">
           <span>
-            总耗时 <strong>{plan.total_eta}</strong>
+            <b>{plan.phases.length}</b> 个阶段
           </span>
-        )}
-        {plan.budget_estimate.length > 0 && (
           <span>
-            预算 <strong>{plan.budget_estimate}</strong>
+            <b>{stepCount}</b> 个步骤
           </span>
-        )}
-        <span>
-          阶段 <strong>{plan.phases.length}</strong>
-        </span>
-      </div>
-
-      <div className="goal">
-        <h3>{plan.goal}</h3>
-      </div>
-
-      {/* 数据时效：把「这个数字有多新」摆在显眼位置。
-          数据旧不可怕，用户不知道它旧才可怕。 */}
-      {(plan.data_freshness.length > 0 || plan.verification_channels.length > 0) && (
-        <div className="freshness">
-          <h4>数据时效</h4>
-          {plan.data_freshness.length > 0 && <p>{plan.data_freshness}</p>}
-          {plan.verification_channels.length > 0 && (
-            <>
-              <div className="freshness-label">出行前建议核实：</div>
-              <ul>
-                {plan.verification_channels.map((channel, i) => (
-                  <li key={i}>{channel}</li>
-                ))}
-              </ul>
-            </>
+          {plan.total_eta.length > 0 && (
+            <span>
+              总计 <b>{plan.total_eta}</b>
+            </span>
+          )}
+          {plan.budget_estimate.length > 0 && (
+            <span>
+              预估 <b>{plan.budget_estimate}</b>
+            </span>
           )}
         </div>
-      )}
+      </div>
 
-      {plan.assumptions.length > 0 && (
-        <div className="notes">
-          <h4>假设</h4>
-          <ul>
-            {plan.assumptions.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ul>
+      {/* 仍需澄清：最需要用户行动的一条，放在最前面 */}
+      {plan.clarifications_needed.length > 0 && (
+        <div className="note ask">
+          <Icon kind="alert" />
+          <div>
+            <p>还需要你确认：</p>
+            <ul>
+              {plan.clarifications_needed.map((item, index) => (
+                <li key={index}>{item}</li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
 
-      {plan.clarifications_needed.length > 0 && (
-        <div className="notes warning">
-          <h4>仍需澄清</h4>
-          <ul>
-            {plan.clarifications_needed.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ul>
+      {/* 数据时效：数据旧不可怕，用户不知道它旧才可怕 */}
+      {(plan.data_freshness.length > 0 || plan.verification_channels.length > 0) && (
+        <div className="note fresh">
+          <Icon kind="info" />
+          <div>
+            {plan.data_freshness.length > 0 && <p>{plan.data_freshness}</p>}
+            {plan.verification_channels.length > 0 && (
+              <p>出行前建议核实：{plan.verification_channels.join('、')}</p>
+            )}
+          </div>
         </div>
       )}
 
       {plan.phases.map((phase, index) => (
-        <div className="phase" key={index}>
+        <section className="phase" key={`${phase.name}-${index}`}>
           <div className="phase-head">
-            {index + 1}. {phase.name}
+            <span className="phase-n">{String(index + 1).padStart(2, '0')}</span>
+            <span className="phase-name">{phase.name}</span>
+            <span className="phase-cnt">{phase.steps.length} 步</span>
           </div>
-          <div className="steps">
-            {phase.steps.map((step) => (
-              <StepRow key={step.id} step={step} />
-            ))}
-          </div>
-        </div>
+          {phase.steps.map((step) => (
+            <StepRow key={step.id} step={step} />
+          ))}
+        </section>
       ))}
 
       {plan.risks.length > 0 && (
-        <div className="notes">
-          <h4>风险与对策</h4>
-          <ul>
-            {plan.risks.map((item, i) => (
-              <li key={i}>
-                <strong>{item.risk}</strong> —— {item.mitigation}
-              </li>
-            ))}
-          </ul>
+        <div className="note warn">
+          <Icon kind="alert" />
+          <div>
+            <p>风险与对策：</p>
+            <ul>
+              {plan.risks.map((item, index) => (
+                <li key={index}>
+                  <strong>{item.risk}</strong> —— {item.mitigation}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
 
-      {showRaw && <pre className="raw">{markdown}</pre>}
-    </section>
+      {plan.assumptions.length > 0 && (
+        <div className="note fresh">
+          <Icon kind="info" />
+          <div>
+            <p>本次规划基于这些假设：</p>
+            <ul>
+              {plan.assumptions.map((item, index) => (
+                <li key={index}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 16 }}>
+        <button type="button" className="raw-toggle" onClick={() => setShowRaw((v) => !v)}>
+          {showRaw ? '收起 Markdown 原文' : '查看 Markdown 原文'}
+        </button>
+        {showRaw && <pre className="raw">{markdown}</pre>}
+      </div>
+    </>
   )
 }

@@ -42,6 +42,7 @@ task-planner/mcp_server/data/.cache/
 # 前端
 # ============================================================
 node_modules/
+*.tsbuildinfo
 frontend/dist/
 frontend/.vite/
 *.local

@@ -374,6 +374,27 @@ def _fetch_transit(params: TransitParams, origin: Any, destination: Any) -> tupl
     return payload, ""
 
 
+def summarize_transit(data: dict[str, Any]) -> str:
+    """形如：``上海 → 成都，最快 8.2h，最低 ¥917，6 个方案``。"""
+    origin, destination = data.get("origin"), data.get("destination")
+    if not origin or not destination:
+        return ""
+
+    summary = data.get("summary") or {}
+    bits: list[str] = []
+    fastest = summary.get("fastest_hours")
+    if isinstance(fastest, (int, float)) and fastest > 0:
+        bits.append(f"最快 {fastest}h")
+    cheapest = summary.get("cheapest_cost")
+    if isinstance(cheapest, (int, float)) and cheapest > 0:
+        bits.append(f"最低 ¥{round(cheapest)}")
+    count = summary.get("option_count")
+    if isinstance(count, int) and count > 0:
+        bits.append(f"{count} 个方案")
+
+    return f"{origin} → {destination}" + (f"，{'，'.join(bits)}" if bits else "")
+
+
 @register(
     name="query_transit_options",
     description=(
@@ -387,6 +408,7 @@ def _fetch_transit(params: TransitParams, origin: Any, destination: Any) -> tupl
     params_model=TransitParams,
     idempotent=True,
     tags=["外部API", "交通"],
+    summarize=summarize_transit,
 )
 def query_transit_options(params: TransitParams) -> ToolResult:
     origin = lookup_city(params.origin)

@@ -1,4 +1,4 @@
-# 任务规划助手（Task Planner）
+# Cairn · 任务规划助手
 
 > 把复杂任务（如「我想去旅行」）自动分解为**有序、可执行、带依赖关系**的具体步骤。
 > 对应 Experiment 1「Bring Your Own Agent (BYOA)」的三条硬性要求。

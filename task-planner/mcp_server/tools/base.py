@@ -132,6 +132,22 @@ class ToolSpec:
     func: Callable[..., ToolResult]
     idempotent: bool = True
     tags: list[str] = field(default_factory=list)
+    # 把返回数据压成一句人话，供前端「已查证」列表展示。
+    # 放在工具模块里而不是循环里：**只有工具自己知道哪些字段是重点**。
+    summarize: Callable[[dict[str, Any]], str] | None = None
+
+    def summary_of(self, data: Any) -> str:
+        """安全地生成摘要。
+
+        **绝不抛异常** —— 摘要只是锦上添花，不能因为它把一次成功的工具调用
+        变成失败。返回空串表示「没有摘要可给」，前端会退回只显示工具名。
+        """
+        if self.summarize is None or not isinstance(data, dict):
+            return ""
+        try:
+            return str(self.summarize(data)).strip()
+        except Exception:  # noqa: BLE001 - 摘要失败不该影响主流程
+            return ""
 
     def openai_schema(self) -> dict[str, Any]:
         """生成 OpenAI / DeepSeek Function Calling 格式的 Schema。"""
@@ -160,6 +176,7 @@ def register(
     *,
     idempotent: bool = True,
     tags: list[str] | None = None,
+    summarize: Callable[[dict[str, Any]], str] | None = None,
 ) -> Callable[[Callable[..., ToolResult]], Callable[..., ToolResult]]:
     """把函数登记进 ``TOOL_REGISTRY``。"""
 
@@ -173,6 +190,7 @@ def register(
             func=fn,
             idempotent=idempotent,
             tags=tags or [],
+            summarize=summarize,
         )
         return fn
 

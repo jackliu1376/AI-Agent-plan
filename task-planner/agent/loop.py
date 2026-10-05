@@ -86,6 +86,22 @@ def strip_json_block(text: str) -> str:
     return re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", text, flags=re.DOTALL).strip()
 
 
+def _tool_summary(name: str, result: ToolResult) -> str:
+    """取工具的人话摘要（供前端「已查证」列表展示）。
+
+    走 ``ToolSpec.summary_of``，任何异常都在那里被吞掉并返回空串 ——
+    摘要只是展示层的东西，**不能因为它让一次成功的工具调用看起来失败**。
+    """
+    if not result.ok:
+        return ""
+    from mcp_server.tools.base import TOOL_REGISTRY
+
+    spec = TOOL_REGISTRY.get(name)
+    if spec is None:  # MCP 远程工具没有本地 spec
+        return ""
+    return spec.summary_of(result.data)
+
+
 def _repair_instruction(reason: str, has_text: bool) -> str:
     """构造修复重试的纠错指令。
 
@@ -393,6 +409,9 @@ class Orchestrator:
                         {
                             "tool": call.name,
                             "ok": result.ok,
+                            # 人话摘要：前端「已查证」列表用它代替原始的
+                            # `latency_ms · 预算 1/12`。失败时为空串。
+                            "summary": _tool_summary(call.name, result),
                             "error_code": result.error.code if result.error else None,
                             "latency_ms": result.meta.latency_ms,
                             "attempts": result.meta.attempts,

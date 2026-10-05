@@ -26,9 +26,10 @@ import time
 import uvicorn
 
 from agent.config import Settings
+from common.console import ensure_safe_stdio
 
 HOST = "127.0.0.1"
-WINDOW_TITLE = "任务规划助手"
+WINDOW_TITLE = "Cairn · 任务规划助手"
 STARTUP_TIMEOUT_SECONDS = 20.0
 
 
@@ -65,6 +66,9 @@ def main() -> int:
     import webview
 
     from web.app import STATIC_DIR, create_app
+
+    # Windows 控制台是 GBK，emoji 编码不了会抛 UnicodeEncodeError
+    ensure_safe_stdio()
 
     if not (STATIC_DIR / "index.html").is_file():
         print(

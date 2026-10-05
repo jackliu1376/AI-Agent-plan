@@ -117,6 +117,26 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     }
 
 
+_CURRENCY_SYMBOL = {"CNY": "¥", "USD": "$", "EUR": "€", "JPY": "¥", "GBP": "£", "KRW": "₩"}
+
+
+def summarize_attractions(data: dict[str, Any]) -> str:
+    """形如：``匹配到 12 个景点，人均 ¥0–180``。"""
+    items = data.get("items") or []
+    if not items:
+        return ""
+
+    prices = [i["price"] for i in items if isinstance(i.get("price"), (int, float))]
+    head = f"匹配到 {len(items)} 个景点"
+    if not prices:
+        return head
+
+    symbol = _CURRENCY_SYMBOL.get(str(data.get("currency") or ""), "")
+    low, high = round(min(prices)), round(max(prices))
+    amount = f"{symbol}{low}" if low == high else f"{symbol}{low}–{high}"
+    return f"{head}，人均 {amount}"
+
+
 @register(
     name="query_attractions_db",
     description=(
@@ -131,6 +151,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     params_model=AttractionsParams,
     idempotent=True,
     tags=["本地数据库", "景点"],
+    summarize=summarize_attractions,
 )
 def query_attractions_db(params: AttractionsParams) -> ToolResult:
     sql = "SELECT * FROM attractions WHERE city = ?"

@@ -205,6 +205,38 @@ def _advice(days: list[dict[str, Any]]) -> str:
     return "；".join(parts) + "。"
 
 
+def summarize_weather(data: dict[str, Any]) -> str:
+    """把预报压成一句人话，供前端「已查证」列表展示。
+
+    形如：``10-03 起 3 天，多云 18–26°C · 10-04 有小雨``
+    """
+    days = data.get("daily") or []
+    if not days:
+        return ""
+
+    first = days[0]
+    start = str(first.get("date") or "")[5:]  # YYYY-MM-DD → MM-DD
+    lows = [d["tmin"] for d in days if isinstance(d.get("tmin"), (int, float))]
+    highs = [d["tmax"] for d in days if isinstance(d.get("tmax"), (int, float))]
+
+    bits = [f"{start} 起 {len(days)} 天"]
+    weather = str(first.get("weather") or "").strip()
+    if weather and weather != "未知":
+        bits.append(weather)
+    if lows and highs:
+        bits.append(f"{round(min(lows))}–{round(max(highs))}°C")
+
+    out = "，".join(bits)
+    rainy = [
+        str(d.get("date") or "")[5:]
+        for d in days
+        if isinstance(d.get("precip_prob"), (int, float)) and d["precip_prob"] >= 50
+    ]
+    if rainy:
+        out += f" · {'、'.join(rainy)} 有小雨"
+    return out
+
+
 @register(
     name="get_weather_forecast",
     description=(
@@ -215,6 +247,7 @@ def _advice(days: list[dict[str, Any]]) -> str:
     params_model=WeatherParams,
     idempotent=True,
     tags=["外部API", "天气"],
+    summarize=summarize_weather,
 )
 def get_weather_forecast(params: WeatherParams) -> ToolResult:
     # 1) 解析城市

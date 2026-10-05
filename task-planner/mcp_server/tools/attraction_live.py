@@ -236,6 +236,26 @@ def _fetch_poi(params: AttractionLiveParams) -> tuple[dict | None, str]:
     return payload, ""
 
 
+def summarize_attraction_live(data: dict[str, Any]) -> str:
+    """形如：``成都大熊猫繁育研究基地 · 评分 4.7 · 07:30-18:00…``。
+
+    开放时间原文很长（含季节性、闭馆日），这里截断 —— 完整内容在计划正文里。
+    """
+    name = str(data.get("matched_name") or "").strip()
+    if not name:
+        return ""
+
+    bits: list[str] = []
+    rating = data.get("rating")
+    if rating:
+        bits.append(f"评分 {rating}")
+    opentime = " ".join(str(data.get("opentime") or "").split())
+    if opentime:
+        bits.append(opentime[:26] + ("…" if len(opentime) > 26 else ""))
+
+    return f"{name} · {' · '.join(bits)}" if bits else name
+
+
 @register(
     name="query_attraction_realtime",
     description=(
@@ -250,6 +270,7 @@ def _fetch_poi(params: AttractionLiveParams) -> tuple[dict | None, str]:
     params_model=AttractionLiveParams,
     idempotent=True,
     tags=["外部API", "景点"],
+    summarize=summarize_attraction_live,
 )
 def query_attraction_realtime(params: AttractionLiveParams) -> ToolResult:
     # 先确认城市能解析 —— 顺便校验用户给的城市名是有效的

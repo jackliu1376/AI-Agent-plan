@@ -21,8 +21,11 @@
 
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 import {
+  ApiError,
+  createRevision,
   createSession,
   deleteSession,
+  getRevision,
   getSession,
   listSessions,
   openEventStream,
@@ -33,6 +36,7 @@ import type {
   ClarificationData,
   PlanEvent,
   PlanReadyData,
+  RevisionSummary,
   SessionStatus,
 } from '../api/types'
 
@@ -59,6 +63,31 @@ export interface SessionState {
   result: PlanReadyData | null
   error: string | null
   history: HistoryEntry[]
+  /** 版本链（不含正文）。最新一版在最后。 */
+  revisions: RevisionSummary[]
+  /** 当前正在看第几版；0 表示还没有版本 */
+  activeSeq: number
+  /**
+   * 正在离开空状态，以及用哪种节奏离开。
+   *
+   * - ``'fade'``：用户**开始一件新事**（提交任务）。值得放一段 420ms 的
+   *   「启动」手势 —— 那几秒本来就要等模型跑。
+   * - ``'fast'``：用户只是**打开一份已有的记录**。计划在服务端现成，
+   *   网络往返 ~20ms，此时再放 420ms 动画就是纯粹的等待 ——
+   *   实测过：计划 23ms 就渲染好了，却被压在淡出中的光区下面，
+   *   用户要等到 446ms 才看得见。
+   *
+   * 两个值都在**点击的那一刻同步置位**，不等网络回来 ——
+   * 否则用户点完会先愣一下，动画才开始。
+   */
+  leaving: 'none' | 'fade' | 'fast'
+  /**
+   * 正在修订时回显的用户原话。
+   *
+   * 有两个用途：界面上让用户看到「我在按这句话改」，以及区分这次运行
+   * 是初版还是修订 —— ``plan_ready`` 要靠它决定要不要往版本链里加一项。
+   */
+  pendingFeedback: string | null
 }
 
 const HISTORY_KEY = 'cairn.history.v2'
@@ -143,13 +172,24 @@ const INITIAL: SessionState = {
   result: null,
   error: null,
   history: [],
+  revisions: [],
+  activeSeq: 0,
+  pendingFeedback: null,
+  leaving: 'none',
 }
 
 type Action =
   | { type: 'started'; sessionId: string; task: string }
+  | { type: 'leaving'; mode: 'fade' | 'fast' }
+  | { type: 'revising'; feedback: string }
   | { type: 'event'; event: PlanEvent }
   | { type: 'failed'; message: string }
+  | { type: 'reviseFailed'; message: string }
   | { type: 'cancelled'; message: string }
+  | { type: 'notice'; message: string }
+  | { type: 'dismissError' }
+  | { type: 'removed'; sessionId: string }
+  | { type: 'showVersion'; seq: number; result: PlanReadyData }
   | { type: 'reset' }
   | { type: 'history'; history: HistoryEntry[] }
   | {
@@ -158,6 +198,7 @@ type Action =
       task: string
       result: PlanReadyData | null
       events: PlanEvent[]
+      revisions: RevisionSummary[]
       error: string | null
     }
 
@@ -170,13 +211,48 @@ function reducer(state: SessionState, action: Action): SessionState {
         sessionId: action.sessionId,
         task: action.task,
         history: state.history,
+        // **必须把 leaving 带过来。** INITIAL 里是 'none'，
+        // 而 start()/restore() 在**点击那一刻**就把它设成了 fade/fast ——
+        // 用 INITIAL 覆盖的话，退场定时器会被清掉，光区永远不卸载，
+        // 计划就渲染在那块永不消失的拼贴下面（而且 TaskInput 也不会卸载，
+        // 回首页时输入框里还留着上次的文字）。
+        leaving: state.leaving,
       }
 
     case 'history':
       return { ...state, history: action.history }
 
+    case 'leaving':
+      return { ...state, leaving: action.mode }
+
+    case 'revising':
+      // 进修订：清掉上一次的错误与遗留的澄清，但**保留** events ——
+      // 事件是追加的，新一次运行会接着往后写。
+      return {
+        ...state,
+        phase: 'running',
+        pendingFeedback: action.feedback,
+        clarification: null,
+        error: null,
+      }
+
+    case 'showVersion': {
+      const latest = state.revisions.length
+      return {
+        ...state,
+        phase: action.result.ok ? 'done' : 'failed',
+        result: action.result,
+        activeSeq: action.seq,
+        // 查证记录属于「最新一次运行」，看旧版时留着它会张冠李戴
+        events: action.seq === latest ? state.events : [],
+        clarification: null,
+        error: action.result.ok ? null : '这一版没有产出合规的计划。',
+      }
+    }
+
     case 'restored': {
       const ok = action.result !== null && action.result.ok
+      const latest = action.revisions.length
       return {
         ...state,
         phase: ok ? 'done' : 'failed',
@@ -184,8 +260,11 @@ function reducer(state: SessionState, action: Action): SessionState {
         task: action.task,
         result: action.result,
         events: action.events,
+        revisions: action.revisions,
+        activeSeq: latest,
         clarification: null,
         error: ok ? null : (action.error ?? '模型未能产出合规的计划 JSON。'),
+        pendingFeedback: null,
       }
     }
 
@@ -205,6 +284,21 @@ function reducer(state: SessionState, action: Action): SessionState {
             ok: event.data.ok,
             status: event.data.ok ? 'done' : 'failed',
           })
+          // 每一次运行（初版也算）在服务端都会登记成一版，本地照做。
+          // 只补修订那次的话，本地版本号会比服务端少 1 —— 界面上就会
+          // 把刚改完的显示成「第 1 版」，而点开菜单又是「第 2 版」。
+          const feedback = state.pendingFeedback ?? ''
+          const revisions = [
+            ...state.revisions,
+            {
+              seq: state.revisions.length + 1,
+              feedback,
+              created_at: Date.now() / 1000,
+              ok: event.data.ok,
+              step_count: event.data.step_count,
+              revision_summary: event.data.revision_summary,
+            },
+          ]
           return {
             ...state,
             events,
@@ -213,6 +307,9 @@ function reducer(state: SessionState, action: Action): SessionState {
             clarification: null,
             error: event.data.ok ? null : '模型未能产出合规的计划 JSON。',
             history,
+            revisions,
+            activeSeq: revisions.length,
+            pendingFeedback: null,
           }
         }
 
@@ -224,7 +321,15 @@ function reducer(state: SessionState, action: Action): SessionState {
             ok: false,
             status: 'failed',
           })
-          return { ...state, events, phase: 'failed', error: event.data.message, history }
+          return {
+            ...state,
+            events,
+            phase: 'failed',
+            error: event.data.message,
+            history,
+            // 服务端在驱动层出错时不登记版本，本地也不补
+            pendingFeedback: null,
+          }
         }
 
         case 'tool_result':
@@ -244,13 +349,44 @@ function reducer(state: SessionState, action: Action): SessionState {
         ok: false,
         status: 'failed',
       })
-      return { ...state, phase: 'failed', error: action.message, history }
+      return {
+        ...state,
+        phase: 'failed',
+        error: action.message,
+        history,
+        pendingFeedback: null,
+      }
     }
+
+    case 'reviseFailed':
+      // 「提交这次修订」这个动作失败了，但**会话本身没坏** ——
+      // 上一版计划还在，不该把它标成 failed、也不该往历史里塞一条失败记录。
+      // 阶段回到 result 对应的状态，只是多一条提示。
+      return {
+        ...state,
+        phase: state.result === null ? 'failed' : state.result.ok ? 'done' : 'failed',
+        error: action.message,
+        pendingFeedback: null,
+      }
 
     case 'cancelled':
       // 刻意**不写历史**：取消走的是 DELETE（服务端那一行已经删了），
       // 本地再补一条的话，刷新后它会凭空消失，前后不一致。
       return { ...state, phase: 'failed', error: action.message }
+
+    case 'notice':
+      // 只提示，不动阶段也不动历史。
+      // 删除失败属于「旁路的旁路」—— 不该把主画布切成 failed。
+      return { ...state, error: action.message }
+
+    case 'dismissError':
+      return { ...state, error: null }
+
+    case 'removed':
+      return {
+        ...state,
+        history: state.history.filter((item) => item.sessionId !== action.sessionId),
+      }
 
     case 'reset':
       return { ...INITIAL, history: state.history }
@@ -263,6 +399,14 @@ export interface UsePlanningSession {
   answer: (text: string) => Promise<void>
   cancel: () => Promise<void>
   restore: (sessionId: string) => Promise<void>
+  /** 按用户反馈做一次增量修订（调用方负责提供反馈文本） */
+  revise: (feedback: string) => Promise<void>
+  /** 切到某一版（只影响展示，不改变服务端的「当前版本」） */
+  selectVersion: (seq: number) => Promise<void>
+  /** 删除一条历史记录（调用方负责先弹确认框） */
+  remove: (sessionId: string) => Promise<void>
+  /** 关掉提示条（不改变会话状态） */
+  dismissError: () => void
   refreshHistory: () => Promise<void>
   reset: () => void
 }
@@ -316,6 +460,7 @@ export function usePlanningSession(): UsePlanningSession {
   const start = useCallback(
     async (task: string) => {
       closeStream()
+      dispatch({ type: 'leaving', mode: 'fade' })
       try {
         const created = await createSession(task)
         dispatch({ type: 'started', sessionId: created.session_id, task })
@@ -370,6 +515,8 @@ export function usePlanningSession(): UsePlanningSession {
   const restore = useCallback(
     async (sessionId: string) => {
       closeStream()
+      // 打开已有记录：计划是现成的，别让用户等动画
+      dispatch({ type: 'leaving', mode: 'fast' })
       try {
         const view = await getSession(sessionId)
 
@@ -392,6 +539,7 @@ export function usePlanningSession(): UsePlanningSession {
           result: view.result,
           // 事件一起恢复，否则「已查证」那块会消失
           events: view.events ?? [],
+          revisions: view.revisions ?? [],
           // 没产出计划时把服务端的原话带上：可能是「被中断了」，
           // 也可能是「模型输出不合规」—— 两种情况该说的话不一样。
           error: view.error,
@@ -411,10 +559,120 @@ export function usePlanningSession(): UsePlanningSession {
     [closeStream, refreshHistory],
   )
 
+  /**
+   * 增量修订：把上一版计划和这条反馈一起回灌。
+   *
+   * 订阅时**必须带服务端返回的 cursor** —— 事件是追加的，
+   * 从 0 开始会把上一版的进度重放一遍。
+   */
+  const revise = useCallback(
+    async (feedback: string) => {
+      const sessionId = sessionRef.current
+      if (sessionId === null) {
+        dispatch({ type: 'notice', message: '会话已失效，请重新提交任务。' })
+        return
+      }
+      closeStream()
+      dispatch({ type: 'revising', feedback })
+      try {
+        const created = await createRevision(sessionId, feedback)
+        handleRef.current = openEventStream(
+          sessionId,
+          {
+            onEvent: (event) => dispatch({ type: 'event', event }),
+            onTransportError: (message) => dispatch({ type: 'failed', message }),
+          },
+          created.cursor,
+        )
+      } catch (err) {
+        // 405 = 请求落到了静态文件挂载点上，说明后端**没有这条路由**。
+        // 最常见的原因是改了后端但没重启服务 —— 这时说清楚比抛「Method Not Allowed」
+        // 有用得多，那个词只会让人以为是自己用错了 HTTP 方法。
+        const stale = err instanceof ApiError && err.status === 405
+        dispatch({
+          type: 'reviseFailed',
+          message: stale
+            ? '后端服务还是旧版本（没有修订接口）。请重启后端：停掉 uv run task-planner-web 再重新运行，然后刷新本页。'
+            : err instanceof Error
+              ? err.message
+              : '提交修改失败，请稍后重试。',
+        })
+      }
+    },
+    [closeStream],
+  )
+
+  const selectVersion = useCallback(
+    async (seq: number) => {
+      const sessionId = sessionRef.current
+      if (sessionId === null) return
+      closeStream()
+      try {
+        const view = await getRevision(sessionId, seq)
+        dispatch({ type: 'showVersion', seq, result: view.result })
+      } catch (err) {
+        dispatch({
+          type: 'notice',
+          message: err instanceof Error ? `取第 ${seq} 版失败：${err.message}` : '取历史版本失败。',
+        })
+      }
+    },
+    [closeStream],
+  )
+
   const reset = useCallback(() => {
     closeStream()
     dispatch({ type: 'reset' })
   }, [closeStream])
 
-  return { state, start, answer, cancel, restore, refreshHistory, reset }
+  const dismissError = useCallback(() => {
+    dispatch({ type: 'dismissError' })
+  }, [])
+
+  /**
+   * 删除一条历史记录。**不做二次确认** —— 那是调用方（弹窗）的事，
+   * 这样这个 hook 保持纯粹，也方便别处复用。
+   *
+   * 采用**乐观更新**：本地删一行只要几毫秒，等一个网络往返再更新界面
+   * 只会让人觉得卡。代价是失败时那一行会「弹回来」，所以失败后
+   * 必须重新拉一次列表 —— 宁可列表闪一下，也不能让界面和磁盘不一致。
+   */
+  const remove = useCallback(
+    async (sessionId: string) => {
+      const wasActive = sessionId === sessionRef.current
+
+      dispatch({ type: 'removed', sessionId })
+      if (wasActive) {
+        // 删的正是当前打开的那条：主画布要一起收掉。
+        // 不收的话你会看着一个已经不存在的记录，复制 Markdown 还会成功。
+        closeStream()
+        dispatch({ type: 'reset' })
+      }
+
+      try {
+        await deleteSession(sessionId)
+      } catch {
+        dispatch({
+          type: 'notice',
+          message: '删除失败，已把列表恢复回来。请确认后端服务是否在运行。',
+        })
+        void refreshHistory()
+      }
+    },
+    [closeStream, refreshHistory],
+  )
+
+  return {
+    state,
+    start,
+    answer,
+    cancel,
+    restore,
+    revise,
+    selectVersion,
+    remove,
+    dismissError,
+    refreshHistory,
+    reset,
+  }
 }

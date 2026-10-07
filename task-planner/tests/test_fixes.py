@@ -605,10 +605,37 @@ def test_tool_returns_freshness_metadata(fake_weather) -> None:
     assert result.ok, result.error.message if not result.ok else ""
     data = result.data
     assert data["data_verified_at"]
-    assert "核对的演示数据" in data["freshness_note"]
+    assert "演示数据" in data["freshness_note"]
     assert data["official_channel"]
     # 每条记录也要带核对时间
     assert all(item["verified_at"] == data["data_verified_at"] for item in data["items"])
+
+
+def test_freshness_note_explains_source_tiers() -> None:
+    """来源分层必须写进提示文案。
+
+    库里混了三批数据（人工核对 / 高德实抓 / Wikidata 实抓），字段可信度不同。
+    文案里不说明的话，模型会把估算的票价当成核对过的数字直接引用 ——
+    这正是 ``source`` 字段要防的事。
+    """
+    result = invoke("query_attractions_db", {"city": "成都", "limit": 2})
+
+    assert result.ok
+    note = result.data["freshness_note"]
+    assert "source" in note
+    assert "估算" in note
+
+
+def test_each_item_exposes_its_source() -> None:
+    """每条记录要带 source —— 模型据此决定措辞的确定性。"""
+    result = invoke("query_attractions_db", {"city": "成都", "limit": 5})
+
+    assert result.ok
+    sources = {item["source"] for item in result.data["items"]}
+    assert sources, "items 里没有 source 字段"
+    assert sources <= {"manual", "amap", "wikidata"}
+    # 成都既有手写数据也有抓取数据，手写的优先
+    assert "manual" in sources
 
 
 def test_official_channel_differs_for_domestic_and_international() -> None:

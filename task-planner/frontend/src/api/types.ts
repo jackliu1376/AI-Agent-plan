@@ -75,6 +75,8 @@ export interface PlanReadyData {
   plan: Plan | null
   trace: Trace
   step_count: number
+  /** 修订时模型自己说这次改了哪几处。初版为空串。 */
+  revision_summary: string
 }
 
 export interface ErrorData {
@@ -195,6 +197,37 @@ export interface SessionView {
   event_count: number
   /** 完整事件流。恢复一条旧记录时用它渲染「已查证 N 项」。 */
   events: PlanEvent[]
+  /** 版本摘要（不含计划正文）。正文走 getRevision()。 */
+  revisions: RevisionSummary[]
+}
+
+/** 版本菜单里的一行。不含计划正文 —— 正文动辄几十 KB，列表接口不该背它。 */
+export interface RevisionSummary {
+  seq: number
+  /** 产生这一版的用户反馈。初版为空串。 */
+  feedback: string
+  /** Unix 秒 */
+  created_at: number
+  ok: boolean
+  step_count: number
+  revision_summary: string
+}
+
+/** 提交一次修订后的响应。`cursor` 是本次运行事件的起始下标。 */
+export interface RevisionResponse {
+  ok: boolean
+  session_id: string
+  seq: number
+  cursor: number
+  events_url: string
+}
+
+export interface RevisionView {
+  session_id: string
+  seq: number
+  feedback: string
+  created_at: number
+  result: PlanReadyData
 }
 
 /** 「最近」列表的一行。刻意不含 events / result —— 列表不需要正文。 */

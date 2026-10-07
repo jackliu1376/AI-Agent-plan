@@ -61,13 +61,40 @@ interface Props {
   plan: Plan
   markdown: string
   stepCount: number
+  /** 第几版；0 表示不显示版本标记（老记录或尚未产生版本） */
+  seq?: number
+  /** 本次修订改了哪几处（模型自述，走 JSON 旁路 key，不进 Plan schema） */
+  revisionSummary?: string
+  /** 正在看的是不是历史版本 */
+  historical?: boolean
+  /** 点「去下面回答」时把焦点送到输入框 */
+  onJumpToComposer?: () => void
 }
 
-export function PlanView({ plan, markdown, stepCount }: Props) {
+export function PlanView({
+  plan,
+  markdown,
+  stepCount,
+  seq = 0,
+  revisionSummary = '',
+  historical = false,
+  onJumpToComposer,
+}: Props) {
   const [showRaw, setShowRaw] = useState(false)
 
   return (
     <>
+      {/* 版本与改动摘要放在**计划顶部**，不放输入框下面 ——
+          用户触发修订后眼睛是在文档上的，摘要该跟着内容走。
+          放底部的话它就在整个页面最下面，离「改了什么」最远。 */}
+      {(seq > 0 || revisionSummary.length > 0) && (
+        <div className="plan-version">
+          {seq > 0 && <span className="vbadge">第 {seq} 版</span>}
+          {revisionSummary.length > 0 && <span className="vsum">{revisionSummary}</span>}
+          {historical && <span className="vhint">正在看历史版本</span>}
+        </div>
+      )}
+
       <div className="plan-head">
         <h2>{plan.goal}</h2>
         <div className="plan-facts">
@@ -95,7 +122,14 @@ export function PlanView({ plan, markdown, stepCount }: Props) {
         <div className="note ask">
           <Icon kind="alert" />
           <div>
-            <p>还需要你确认：</p>
+            <p>
+              还需要你确认：
+              {onJumpToComposer !== undefined && (
+                <button type="button" className="ask-jump" onClick={onJumpToComposer}>
+                  去下面回答 ↓
+                </button>
+              )}
+            </p>
             <ul>
               {plan.clarifications_needed.map((item, index) => (
                 <li key={index}>{item}</li>

@@ -139,10 +139,22 @@ def test_attractions_filter_by_price_and_tag() -> None:
 
 
 def test_attractions_unknown_city_lists_available() -> None:
+    """错误信息要说明覆盖范围，让模型知道能查什么。
+
+    **刻意不列全部城市名**：扩到 250 城后，逐个列出会产出约 2000 字符的提示，
+    每次失败都进模型上下文，纯属浪费 —— 而模型需要知道的只是「大致覆盖哪儿」。
+    国家汇总就够了（看到「中国 195」就知道中国城市基本都有）。
+    """
     result = invoke("query_attractions_db", {"city": "火星"})
     assert not result.ok
     assert result.error.code == ERR_NOT_FOUND
-    assert "成都" in result.error.message  # 错误信息里给出可用城市
+    assert "覆盖" in result.error.message
+    assert "中国" in result.error.message
+    assert "不要凭记忆编造" in result.error.message
+    # 防回归：这条信息会随每次失败进入模型上下文，不能膨胀回城市清单
+    assert len(result.error.message) < 400, (
+        f"提示过长（{len(result.error.message)} 字符），可能又列了全部城市"
+    )
 
 
 def test_attractions_is_idempotent() -> None:
@@ -256,11 +268,15 @@ def test_estimate_route_unknown_city() -> None:
 def test_route_error_guides_scenic_spot_handling() -> None:
     """景区级目的地无法解析时，错误信息必须给出可执行的降级路径。
 
-    这是评测跑出来的真实缺口：模型会自然地想规划到「都江堰」「青城山」
-    这类景区（它们在景点库里有，但不在城市索引里）。
+    这是评测跑出来的真实缺口：模型会自然地想规划到「牛背山」「篁岭」这类
+    景区（它们不在城市索引里，只有所属城市在）。
     错误信息若只说「无法解析」，模型只能摆烂或编造距离。
+
+    **样本要选当前确实不在索引里的地名** —— 这条用例已经因为数据扩充
+    换过两次（都江堰 → 青城山 → 牛背山）：每补一批景区级目的地，
+    就会有一个旧样本变得可解析。改的时候挑一个还没收录的即可。
     """
-    result = invoke("estimate_route", {"origin": "成都", "destination": "都江堰"})
+    result = invoke("estimate_route", {"origin": "成都", "destination": "牛背山"})
 
     assert not result.ok
     assert result.error.code == ERR_NOT_FOUND

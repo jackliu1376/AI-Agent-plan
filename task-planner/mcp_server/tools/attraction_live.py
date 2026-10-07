@@ -115,11 +115,58 @@ def cities_conflict(expected: str, actual: str) -> bool:
 
     实测 ``region=巴黎`` 的查询返回了广州市的结果 —— region 参数不可靠，
     必须自己校验。这里做双向包含判断（「成都市」vs「成都」视为一致）。
+
+    **注意这只是第一道筛。** 字符串比对对县级市会误判（见 ``nearby``），
+    所以真正的判据是坐标，这里判为冲突时还要过一遍坐标复核。
     """
     e, a = normalize_name(expected), normalize_name(actual)
     if not e or not a:
         return False  # 拿不到城市就不据此拒绝，交给名称相似度
     return not (e in a or a in e)
+
+
+# POI 与目标城市的距离上限。超过就认为确实不是同一个地方。
+NEARBY_KM = 120.0
+
+
+def nearby(city: str, poi: dict[str, Any]) -> bool:
+    """用坐标复核 POI 是否属于目标城市。
+
+    **这是城市归属的可靠判据。** 高德的 ``cityname`` 对县级市填的是**上级
+    行政区**：查「稻城」返回的 ``cityname`` 是「甘孜藏族自治州」，
+    查「康定」同样 —— 字符串比对会判为冲突，把**完全正确**的数据拒掉。
+
+    实测踩到：用户说「我想去稻城亚丁」，9 项查证里 5 项失败，其中
+    ``query_attraction_realtime`` 拿到的其实是「甘孜稻城亚丁景区」
+    （adcode 513337 正是稻城县），却因为 cityname 是州名而被拒绝。
+
+    坐标不会有这个问题：稻城县的 POI 就在稻城坐标附近。
+    """
+    info = lookup_city(city)
+    if info is None:
+        return False
+    dist = _distance_km(poi.get("location") or "", info.lat, info.lon)
+    return dist is not None and dist <= NEARBY_KM
+
+
+def _distance_km(location: str, lat: float, lon: float) -> float | None:
+    """高德的 ``location`` 是 ``"经度,纬度"``。解析不了返回 None。"""
+    if not location or "," not in location:
+        return None
+    lon_s, _, lat_s = location.partition(",")
+    try:
+        return _haversine_km(lat, lon, float(lat_s), float(lon_s))
+    except ValueError:
+        return None
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    from math import asin, cos, radians, sin, sqrt
+
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    return 2 * 6371.0 * asin(sqrt(a))
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +219,9 @@ def pick_best_match(
         return None, 0.0, "高德没有返回任何候选"
 
     actual_city = best.get("cityname") or ""
-    if cities_conflict(query_city, actual_city):
+    # 城市名对不上时，**再用坐标复核一次** —— 高德对县级市填的是上级行政区名
+    # （查「稻城」返回「甘孜藏族自治州」），光比字符串会把正确数据拒掉。
+    if cities_conflict(query_city, actual_city) and not nearby(query_city, best):
         # 这是最强的不匹配信号：查巴黎的景点却返回广州的结果
         return (
             None,

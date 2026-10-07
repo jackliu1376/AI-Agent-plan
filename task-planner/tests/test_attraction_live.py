@@ -21,6 +21,7 @@ from mcp_server.tools.attraction_live import (
     MATCH_REJECT_BELOW,
     cities_conflict,
     name_similarity,
+    nearby,
     normalize_name,
     parse_poi,
     pick_best_match,
@@ -196,6 +197,42 @@ def test_cities_conflict_ignores_missing_data() -> None:
     """拿不到城市就不据此拒绝 —— 交给名称相似度判断。"""
     assert cities_conflict("成都", "") is False
     assert cities_conflict("", "广州市") is False
+
+
+def test_nearby_accepts_county_level_poi() -> None:
+    """坐标复核能救回被城市名误杀的县级市 POI。
+
+    高德的 ``cityname`` 对县级市填的是**上级行政区**：查「稻城」返回
+    「甘孜藏族自治州」，查「康定」同样。字符串比对判为冲突，
+    会把**完全正确**的数据拒掉 —— 实测用户查「稻城亚丁」时，
+    高德明明返回了「甘孜稻城亚丁景区」（adcode 513337 正是稻城县），
+    却被城市冲突检查拦下。
+    """
+    poi = {"name": "甘孜稻城亚丁景区", "cityname": "甘孜藏族自治州",
+           "location": "100.2977,29.0378"}  # 稻城县城坐标
+
+    assert cities_conflict("稻城", poi["cityname"]) is True, "字符串层面确实对不上"
+    assert nearby("稻城", poi) is True, "但坐标对得上，不该拒绝"
+
+    # 反向：真的错配（巴黎查询返回广州）坐标差得远，仍然要拒绝
+    far = {"name": "广州塔", "cityname": "广州市", "location": "113.3245,23.1065"}
+    assert nearby("巴黎", far) is False
+
+
+def test_pick_best_match_accepts_county_level_via_coordinates() -> None:
+    """整合验证：cityname 是州名但坐标正确时，应该采纳。"""
+    pois = [{
+        "name": "甘孜稻城亚丁景区", "cityname": "甘孜藏族自治州",
+        "location": "100.2977,29.0378", "type": "风景名胜",
+    }]
+    best, score, reason = pick_best_match(
+        pois, query_name="稻城亚丁", query_city="稻城"
+    )
+
+    assert best is not None, f"被误杀了：{reason}"
+    assert best["name"] == "甘孜稻城亚丁景区"
+    assert score >= MATCH_HIGH_ABOVE
+
 
 
 # ---------------------------------------------------------------------------

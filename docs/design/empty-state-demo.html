@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cairn · 空状态 hero 光区 图纸</title>
+<style>
+/* ============================================================
+   令牌分两层
+   ------------------------------------------------------------
+   ① 基础令牌：与线上 styles.css 完全一致（发丝线 + 近黑主色，无渐变无阴影）
+   ② hero 光区令牌：**只在 .hero-zone 内生效**
+
+   为什么分两层：参考图那套质感（渐变 / 发光 / 投影 / 3D）如果铺到整页，
+   计划区、步骤区会一起变「重」，反而没有层次。这里把它关在入口区，
+   工作区维持原样 —— 入口可以炫，干活的地方要安静。
+   ============================================================ */
+:root {
+  --bg:        #faf9f8;
+  --surface:   #ffffff;
+  --surface-2: #f6f5f3;
+  --line:      #eceae6;
+  --line-2:    #dedbd5;
+
+  --ink:       #1b1a18;
+  --ink-2:     #6d6a63;
+  --ink-3:     #a6a29a;
+
+  --rose:      #b8555f;
+  --sage:      #4d7c5c;
+  --amber:     #9a7420;
+
+  --r-card: 16px;
+  --r-ctl:  10px;
+  --r-pill: 999px;
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: "Instrument Sans", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 顶部控制条（只属于图纸，不进产品） ---------- */
+
+.bar {
+  position: sticky; top: 0; z-index: 90;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
+  padding: 11px 20px;
+  background: rgba(250,249,248,.96);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.bar .t { font-weight: 600; letter-spacing: .04em; color: var(--ink-2); }
+.bar label { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); cursor: pointer; }
+.bar input { accent-color: #6d5cf6; }
+.bar .hint { margin-left: auto; color: var(--ink-3); }
+
+/* ============================================================
+   应用外壳（与线上一致）
+   ============================================================ */
+
+.shell {
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr);
+  min-height: calc(100vh - 45px);
+}
+
+.rail { padding: 18px 12px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 18px; }
+.brand { display: flex; align-items: center; gap: 9px; padding: 0 6px; }
+.brand-text { min-width: 0; }
+.rail-toggle {
+  margin-left: auto; width: 26px; height: 26px; flex: none;
+  display: grid; place-items: center; border: none; border-radius: 7px;
+  background: none; color: var(--ink-3); cursor: pointer;
+  transition: background-color .12s, color .12s;
+}
+.rail-toggle:hover { background: var(--surface-2); color: var(--ink); }
+.rail-toggle:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+/* 折叠态 */
+.shell.collapsed { grid-template-columns: 60px minmax(0, 1fr); }
+.shell.collapsed .rail { padding: 16px 10px; align-items: center; }
+.shell.collapsed .brand { flex-direction: column; gap: 10px; padding: 0; }
+.shell.collapsed .brand-text,
+.shell.collapsed .rail-btn span,
+.shell.collapsed .rail h3,
+.shell.collapsed .rail-item span:last-child,
+.shell.collapsed .rail-foot .v span { display: none; }
+.shell.collapsed .rail-btn { width: 32px; height: 32px; padding: 0; justify-content: center; }
+.shell.collapsed .rail-item { justify-content: center; padding: 6px 0; }
+.shell.collapsed .rail-foot .v { justify-content: center; }
+.shell.collapsed .rail-item .dot { display: block; }
+.brand-name { font-size: 14px; font-weight: 600; }
+.brand-sub { font-size: 11px; color: var(--ink-3); }
+.rail-btn {
+  display: flex; align-items: center; gap: 7px; width: 100%; padding: 8px 10px;
+  border: 1px solid var(--ink); border-radius: var(--r-ctl); background: var(--ink);
+  color: #fff; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+}
+.rail h3 { margin: 0 0 6px; padding: 0 6px; font-size: 11px; font-weight: 600; letter-spacing: .05em; color: var(--ink-3); text-transform: uppercase; }
+.rail-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; font-size: 13px; color: var(--ink-2); }
+.rail-item .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.rail-item span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-foot { margin-top: auto; padding: 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-2); }
+.rail-foot .k { font-size: 11px; color: var(--ink-3); margin-bottom: 4px; }
+
+/* 外观切换：分段控件。选中态用「白底 + 发丝线」，与全局控件语言一致 ——
+   不用高亮色，因为这里是「选择」不是「需要注意」。 */
+.seg {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 3px;
+  padding: 3px; border-radius: 9px; background: var(--surface-2);
+}
+.seg-i {
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 5px 0; border: 1px solid transparent; border-radius: 7px;
+  background: none; font: inherit; font-size: 11.5px; color: var(--ink-2); cursor: pointer;
+}
+.seg-i:hover { color: var(--ink); }
+.seg-i[aria-checked="true"] {
+  background: var(--surface); border-color: var(--line-2);
+  color: var(--ink); font-weight: 500;
+}
+.seg-i:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.sw { width: 10px; height: 10px; border-radius: 50%; flex: none; display: block; }
+.sw-cool  { background: linear-gradient(135deg, #7c5cf6, #35c8f0); }
+.sw-brand { background: linear-gradient(135deg, #b8555f, #ef8a3a); }
+.rail-foot .v { display: flex; align-items: center; gap: 6px; }
+.rail-foot .v i { width: 5px; height: 5px; border-radius: 50%; background: var(--sage); display: block; }
+
+/* 折叠后侧栏只有 60px：分段控件竖排、只留色块 */
+.shell.collapsed .rail-foot { padding: 10px 0; }
+/* 折叠后只剩色块，必须给容器定宽 —— 否则按钮会缩成 12px，点都点不到 */
+.shell.collapsed .seg { grid-template-columns: 1fr; gap: 2px; padding: 2px; width: 42px; margin: 0 auto; }
+.shell.collapsed .seg-i { padding: 6px 0; }
+.shell.collapsed .seg-i span { display: none; }
+.shell.collapsed .rail-foot .k { display: none; }
+
+/* ============================================================
+   hero 光区 —— 新语言只活在这里
+   ============================================================ */
+
+.hero-zone {
+  position: relative;
+  overflow: hidden;
+  padding: 74px 32px 46px;
+}
+
+/* 配色主题：蓝紫（参考图） / 品牌暖色（沿用现有色板） */
+.hero-zone {
+  --au-a: #6d5cf6;
+  --au-b: #3fb6f5;
+  --glow: rgba(109,92,246,.30);
+  --glass: rgba(255,255,255,.96);
+  --glass-line: rgba(255,255,255,.92);
+  --lift: 0 22px 48px -22px rgba(70,56,150,.34), 0 3px 8px -4px rgba(20,16,40,.10);
+  /* 拼贴用的渐变，跟着配色开关走 */
+  --g1a: #7c5cf6; --g1b: #35c8f0;
+  --g2a: #f7c948; --g2b: #ef8a3a;
+  --g3a: #4f46e5; --g3b: #3fb6f5;
+}
+.hero-zone[data-palette="brand"] {
+  --au-a: #c2626c;
+  --au-b: #cf9440;
+  --glow: rgba(184,85,95,.26);
+  --lift: 0 22px 48px -22px rgba(130,66,66,.28), 0 3px 8px -4px rgba(40,20,20,.08);
+  --g1a: #b8555f; --g1b: #e0915f;
+  --g2a: #d9a13f; --g2b: #c2762f;
+  --g3a: #a4464f; --g3b: #d98a5a;
+}
+
+/* ---------- ① 背景极光：两团缓慢漂移的色斑 ---------- */
+
+.aurora { position: absolute; inset: -12% -6% auto; height: 118%; pointer-events: none; z-index: 0; }
+.aurora i {
+  position: absolute; display: block; border-radius: 50%;
+  filter: blur(60px);
+  opacity: .58;
+  transition: opacity .55s ease;
+}
+.aurora i:nth-child(1) {
+  width: 380px; height: 380px; left: 6%; top: -12%;
+  background: radial-gradient(circle at 42% 42%, var(--au-a), transparent 68%);
+  animation: drift-a 19s ease-in-out infinite;
+}
+.aurora i:nth-child(2) {
+  width: 340px; height: 340px; right: 4%; top: -8%;
+  background: radial-gradient(circle at 58% 48%, var(--au-b), transparent 68%);
+  animation: drift-b 24s ease-in-out infinite;
+}
+/* 输入框获得焦点时极光提亮 —— 让「效果」和交互有关，而不只是背景装饰 */
+.hero-zone:focus-within .aurora i { opacity: .82; }
+.hero-zone[data-aurora="off"] .aurora { display: none; }
+
+@keyframes drift-a {
+  0%, 100% { transform: translate3d(0,0,0) scale(1); }
+  50%      { transform: translate3d(46px,28px,0) scale(1.09); }
+}
+@keyframes drift-b {
+  0%, 100% { transform: translate3d(0,0,0) scale(1.06); }
+  50%      { transform: translate3d(-52px,22px,0) scale(1); }
+}
+
+.hero-inner { position: relative; z-index: 1; max-width: 660px; margin: 0 auto; }
+
+/* ---------- 品牌石堆水印：缓慢呼吸 ---------- */
+
+.mark {
+  position: absolute; right: -30px; top: -34px; z-index: 0;
+  opacity: .07; pointer-events: none;
+  animation: breathe 13s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%, 100% { transform: scale(1) rotate(-4deg); }
+  50%      { transform: scale(1.045) rotate(-1deg); }
+}
+
+/* ---------- 标题与输入 ---------- */
+
+.hero h1 { margin: 0 0 8px; font-size: 27px; font-weight: 600; letter-spacing: -.02em; line-height: 1.25; }
+.hero p { margin: 0 0 24px; font-size: 14px; color: var(--ink-2); }
+
+.ask {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 6px 6px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: #fff;
+  transition: border-color .2s ease, box-shadow .35s ease;
+}
+.hero-zone[data-aurora="on"] .ask { box-shadow: 0 12px 30px -18px var(--glow); }
+.ask:focus-within { border-color: var(--line-2); }
+
+/* 输入区：轮播必须**盖在** input 上。
+   两者都 flex:1 并排的话会各分一半宽度，轮播文字被截断。 */
+.ask-field { position: relative; flex: 1; min-width: 0; height: 44px; }
+.carousel { position: absolute; inset: 0; }
+.carousel span {
+  position: absolute; inset: 0; display: flex; align-items: center;
+  font-size: 14px; color: var(--ink-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  opacity: 0; animation: cycle 14.4s ease-in-out infinite;
+}
+.carousel span:nth-child(1) { animation-delay: 0s; }
+.carousel span:nth-child(2) { animation-delay: 4.8s; }
+.carousel span:nth-child(3) { animation-delay: 9.6s; }
+.ask[data-typing="1"] .carousel { visibility: hidden; }
+.ask-field input {
+  position: relative; width: 100%; height: 100%; padding: 0;
+  border: 0; outline: 0; background: none;
+  font: inherit; font-size: 14px; color: var(--ink);
+}
+@keyframes cycle {
+  0% { opacity: 0; transform: translateY(4px); }
+  3% { opacity: 1; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(0); }
+  33% { opacity: 0; transform: translateY(-4px); }
+  100% { opacity: 0; }
+}
+
+.go {
+  flex: none; display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 16px; border: 0; border-radius: var(--r-ctl);
+  background: var(--ink); color: #fff; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.chip {
+  padding: 5px 11px; border: 1px solid var(--line); border-radius: var(--r-pill);
+  background: rgba(255,255,255,.7); font: inherit; font-size: 12px; color: var(--ink-2); cursor: pointer;
+  transition: border-color .15s ease, color .15s ease;
+}
+.chip:hover { color: var(--ink); border-color: var(--line-2); }
+
+/* ============================================================
+   ② 3D 浮层舞台
+   ============================================================ */
+
+.stage-wrap { perspective: 1500px; margin-top: 40px; }
+.stage {
+  position: relative; height: 316px;
+  /* 鼠标视差：--px/--py 由 JS 写入（-1 ~ 1），叠加在基础倾角上 */
+  transform:
+    rotateX(calc(9deg + var(--py, 0) * 4deg))
+    rotateY(calc(-13deg + var(--px, 0) * 5.5deg))
+    rotateZ(1.6deg)
+    scale(.97);
+  transition: transform .38s cubic-bezier(.2,.75,.3,1);
+  /* 倾斜放在整块台面上，不再让每张卡各自 3D 分层。
+     分层版本在 Chromium 下会随机丢层（4 张卡只画出 1 张），
+     而视觉收益几乎为零 —— 参考图本来也就是一张倾斜的面。 */
+}
+.hero-zone[data-tilt="off"] .stage { transform: none; }
+
+.fc {
+  position: absolute;
+  border: 1px solid var(--glass-line);
+  border-radius: 14px;
+  background: var(--glass);
+  box-shadow: var(--lift), inset 0 1px 0 rgba(255,255,255,.96);
+  animation:
+    rise .62s cubic-bezier(.2,.8,.3,1) backwards,
+    bob var(--dur, 9s) ease-in-out infinite;
+  animation-delay: var(--d, 0s), calc(var(--d, 0s) + .62s);
+  transform: rotate(var(--r, 0deg));
+  will-change: transform;
+  backface-visibility: hidden;
+}
+/* 每张卡有自己的角度（--r），所以关键帧里必须把它带上 ——
+   否则漂浮动画一跑，卡片就被「扶正」了。 */
+@keyframes rise { from { opacity: 0; transform: translateY(10px) rotate(var(--r, 0deg)) scale(.97); } }
+@keyframes bob {
+  0%, 100% { transform: translateY(0) rotate(var(--r, 0deg)); }
+  50%      { transform: translateY(-5px) rotate(calc(var(--r, 0deg) + var(--rot, .5deg))); }
+}
+
+/* ============================================================
+   拼贴：混合形状 + 各自角度 + 互相叠压
+   ------------------------------------------------------------
+   参考图那块区域没有连线、没有统一网格，是一堆不同形状的卡片
+   叠在一起：药丸卡 / 竖版照片卡 / 带大数字的白卡 / 深色玻璃卡 /
+   右侧一块溢出的渐变面板。这里照着这个结构做，不做收敛式的图示。
+   ============================================================ */
+
+/* 药丸卡 */
+.pill {
+  height: 46px; border-radius: 999px;
+  display: flex; align-items: center; gap: 9px; padding: 0 8px 0 5px;
+  color: #fff; box-shadow: var(--lift);
+}
+.pill.p1 { background: linear-gradient(100deg, var(--g1a), var(--g1b)); }
+.pill.p2 { background: linear-gradient(100deg, var(--g2a), var(--g2b)); }
+.pill .av {
+  width: 36px; height: 36px; border-radius: 50%; flex: none;
+  background: rgba(255,255,255,.3); border: 1px solid rgba(255,255,255,.55);
+  display: grid; place-items: center; font-size: 13px; font-weight: 600;
+}
+.pill .nm { font-size: 13px; font-weight: 500; }
+.pill .tg {
+  margin-left: auto; padding: 3px 9px; border-radius: 999px;
+  background: rgba(255,255,255,.28); font-size: 11px;
+}
+
+/* 白卡：图标 + 小标签 + 大数字 + 状态药丸 */
+.stat { padding: 12px 14px; border-radius: 18px; background: #fff; box-shadow: var(--lift); }
+.stat .tk { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; }
+.stat .tk.a { background: linear-gradient(135deg, var(--g1a), var(--g1b)); }
+.stat .tk.b { background: #23212e; }
+.stat .lb { margin-top: 9px; font-size: 11px; letter-spacing: .05em; color: var(--ink-3); }
+.stat .nb { margin-top: 1px; font-size: 21px; font-weight: 600; letter-spacing: -.015em; color: var(--ink); }
+.stat .pl {
+  display: inline-block; margin-top: 9px; padding: 3px 10px;
+  border-radius: 999px; font-size: 11px;
+  border: 1px solid var(--line-2); color: var(--ink-2);
+}
+.stat .pl.hot { border-color: var(--rose); color: var(--rose); }
+
+/* 竖版照片卡 */
+.photo {
+  border-radius: 20px; overflow: hidden;
+  border: 3px solid #fff; box-shadow: var(--lift);
+  background: var(--surface-2);
+}
+.photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* 深色玻璃卡 */
+.glass {
+  padding: 11px 12px; border-radius: 16px;
+  background: rgba(30,26,48,.74);
+  color: #fff; box-shadow: var(--lift);
+  display: flex; align-items: center; gap: 10px;
+}
+.glass .tk {
+  width: 30px; height: 30px; border-radius: 9px; flex: none;
+  background: rgba(255,255,255,.16); display: grid; place-items: center;
+}
+.glass .tx { flex: 1; min-width: 0; }
+.glass .k1 { font-size: 11px; color: rgba(255,255,255,.62); }
+.glass .k2 { font-size: 14px; font-weight: 500; }
+.glass .add {
+  width: 26px; height: 26px; border-radius: 50%; flex: none;
+  background: rgba(255,255,255,.92); color: #23212e;
+  display: grid; place-items: center;
+}
+
+/* 右侧溢出的渐变面板：点阵 + 一枚圆形按钮 */
+.panel {
+  border-radius: 22px; box-shadow: var(--lift);
+  display: grid; place-items: center;
+  background-image:
+    radial-gradient(circle, rgba(255,255,255,.34) 1px, transparent 1.5px),
+    linear-gradient(150deg, var(--g3a), var(--g3b));
+  background-size: 13px 13px, 100% 100%;
+}
+.panel .bolt {
+  width: 56px; height: 56px; border-radius: 50%;
+  background: rgba(255,255,255,.94); color: var(--g3a);
+  display: grid; place-items: center;
+}
+
+/* 小圆徽章 */
+.badge { border-radius: 50%; background: #fff; box-shadow: var(--lift); display: grid; place-items: center; }
+.badge i {
+  width: 17px; height: 17px; border-radius: 50%; display: block;
+  background: linear-gradient(135deg, var(--g2a), var(--g2b));
+}
+
+/* 计划卡：更大、更实、略微放大（= 更近），是整组视觉的锚点 */
+
+
+/* ============================================================
+   ③ 提交任务时：光区退场（分两拍，见下面的注释）
+   ============================================================ */
+
+/* 第一拍：光区原地淡出 + 上浮。**这一拍里布局完全不动** ——
+   如果同时把高度收掉，内容会在半透明状态下往上抽，很脏。 */
+.hero-zone.exiting .hero,
+.hero-zone.exiting .ask,
+.hero-zone.exiting .chips,
+.hero-zone.exiting .mark {
+  opacity: 0;
+  transform: translateY(-10px);
+  transition: opacity .26s ease, transform .3s cubic-bezier(.4,0,.2,1);
+}
+.hero-zone.exiting .stage-wrap {
+  transform: translateY(-12px);
+  transition: transform .34s cubic-bezier(.4,0,.2,1);
+}
+
+/* 卡片逆序退场：最后入场的先走，间隔用 calc 从入场延迟反推 ——
+   不用再写一遍内联变量。 */
+.hero-zone.exiting .fc {
+  opacity: 0;
+  transition: opacity .24s ease;
+  transition-delay: calc(.46s - var(--d, 0s));
+}
+
+/* 极光比其它元素慢一拍散开：它是「环境光」，
+   先于内容消失会显得像是被关掉了，而不是散掉。 */
+.hero-zone.exiting .aurora i {
+  opacity: 0 !important;
+  transition: opacity .46s ease;
+}
+
+/* 第二拍：等光区彻底看不见了（.42s）再把它从 DOM 里摘掉、换上运行视图。
+   布局跳动发生在「什么都看不见」的那一瞬间，所以看不出来。 */
+.running { display: none; padding: 26px 32px 30px; }
+.hero-zone[data-state="running"] .hero-inner,
+.hero-zone[data-state="running"] .aurora,
+.hero-zone[data-state="running"] .mark { display: none; }
+.hero-zone[data-state="running"] .running { display: block; animation: fade-in .26s ease backwards .06s; }
+@keyframes fade-in { from { opacity: 0; transform: translateY(8px); } }
+
+.echo-line { font-size: 15px; font-weight: 500; margin-bottom: 14px; }
+.stages { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--ink-3); }
+.stages b { font-weight: 500; color: var(--ink); }
+.stages .bar { width: 22px; height: 1px; background: var(--line-2); }
+.probe-line {
+  margin-top: 18px; padding: 10px 14px; border: 1px solid var(--line);
+  border-radius: var(--r-ctl); background: var(--surface);
+  font-size: 12.5px; color: var(--ink-2); display: flex; align-items: center; gap: 8px;
+}
+.spin {
+  width: 11px; height: 11px; flex: none; border-radius: 50%;
+  border: 2px solid var(--line-2); border-top-color: var(--ink);
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ============================================================
+   ④ 有结果时（静态）
+   ============================================================ */
+
+.result { display: none; padding: 30px 32px; }
+.hero-zone[data-state="result"] { padding: 26px 32px 30px; }
+.hero-zone[data-state="result"] .aurora { opacity: 0; transition: opacity .6s ease; }
+/* 光区整套退场。输入框也要退 —— 真实产品里此时它由底部输入区接管，
+   留着会飘在半空（第一版就漏了这个）。 */
+.hero-zone[data-state="result"] .stage-wrap,
+.hero-zone[data-state="result"] .chips,
+.hero-zone[data-state="result"] .ask,
+.hero-zone[data-state="result"] .hero { display: none; }
+.hero-zone[data-state="result"] .running { display: none; }
+.hero-zone[data-state="result"] .result { display: block; }
+.hero-zone[data-state="result"] .mark { opacity: 0; transition: opacity .6s ease; }
+
+.result h2 { margin: 0 0 4px; font-size: 19px; font-weight: 600; }
+.result .facts { display: flex; gap: 16px; font-size: 12px; color: var(--ink-2); margin-bottom: 16px; }
+.result .step { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--surface-2); font-size: 13px; color: var(--ink-2); }
+
+/* ============================================================
+   规格说明
+   ============================================================ */
+
+.spec { max-width: 860px; margin: 0 auto; padding: 34px 32px 60px; border-top: 1px solid var(--line); }
+.spec h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+.spec table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.spec th, .spec td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.spec th { font-weight: 600; color: var(--ink-2); }
+.spec td:first-child { white-space: nowrap; color: var(--ink); }
+.spec td { color: var(--ink-2); }
+.spec .warn { margin-top: 18px; padding: 12px 14px; border: 1px solid var(--line); border-left: 2px solid var(--amber); border-radius: 8px; font-size: 12.5px; color: var(--ink-2); line-height: 1.75; }
+.spec .warn b { color: var(--ink); }
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora i, .mark, .fc, .carousel span { animation: none !important; }
+  .carousel span:nth-child(1) { opacity: 1; }
+  .stage { transform: none !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <span class="t">图纸演示</span>
+  <button type="button" id="play-exit" style="font-size:12px">▶ 播放退场（点「开始规划」也行）</button>
+  <label><input type="checkbox" id="c-state"> 直接看「有结果」的静态样子</label>
+  <span class="hint">极光 / 3D 倾斜 / 鼠标视差已按定稿常开；配色开关已搬进侧栏</span>
+</div>
+
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">
+      <svg width="24" height="24" viewBox="0 0 24 24" aria-label="Cairn" style="flex:none">
+        <rect width="24" height="24" rx="7.5" fill="#1b1a18"/>
+        <ellipse cx="12" cy="16.8" rx="5.6" ry="2.7" fill="#fff"/>
+        <ellipse cx="12" cy="12.2" rx="4.2" ry="2.3" fill="#fff"/>
+        <ellipse cx="12" cy="8.3" rx="2.7" ry="1.8" fill="#fff"/>
+      </svg>
+      <div class="brand-text">
+        <div class="brand-name">Cairn</div>
+        <div class="brand-sub">任务规划助手</div>
+      </div>
+      <button class="rail-toggle" type="button" id="rail-toggle" aria-label="折叠侧栏" title="折叠侧栏">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="1.5" y="2.8" width="13" height="10.4" rx="3" stroke="currentColor" stroke-width="1.35"/>
+          <path d="M6.2 2.8v10.4" stroke="currentColor" stroke-width="1.35"/>
+        </svg>
+      </button>
+    </div>
+
+    <button class="rail-btn" type="button">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v10M1 6h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span>新建任务</span>
+    </button>
+
+    <div>
+      <h3>最近</h3>
+      <div class="rail-item"><span class="dot" style="background:#4d7c5c"></span><span>三个月的备考计划</span></div>
+      <div class="rail-item"><span class="dot" style="background:#4d7c5c"></span><span>这周末去杭州玩两天…</span></div>
+      <div class="rail-item"><span class="dot" style="background:#4d7c5c"></span><span>周末去成都玩两天，…</span></div>
+    </div>
+
+    <div class="rail-foot">
+      <div class="k">外观</div>
+      <div class="seg" role="radiogroup" aria-label="光区配色">
+        <button class="seg-i" type="button" role="radio" aria-checked="true" data-pal="cool">
+          <i class="sw sw-cool" aria-hidden="true"></i><span>蓝紫</span>
+        </button>
+        <button class="seg-i" type="button" role="radio" aria-checked="false" data-pal="brand">
+          <i class="sw sw-brand" aria-hidden="true"></i><span>暖色</span>
+        </button>
+      </div>
+      <div class="k" style="margin-top:14px">数据源</div>
+      <div class="v"><i></i><span>天气 · 景点库 · 汇率 已就绪</span></div>
+    </div>
+  </aside>
+
+  <main class="hero-zone" id="zone" data-palette="cool" data-aurora="on" data-tilt="on" data-parallax="on" data-state="empty">
+
+    <!-- ① 背景极光 -->
+    <div class="aurora" aria-hidden="true"><i></i><i></i></div>
+
+    <div class="hero-inner">
+      <div class="hero">
+        <h1>想去哪？想做什么？</h1>
+        <p>说一句就够了。它会先查证数据，再给出带依赖顺序的执行计划。</p>
+      </div>
+
+      <form class="ask" id="ask" onsubmit="return false">
+        <div class="ask-field">
+          <div class="carousel" aria-hidden="true">
+            <span>周末去成都玩两天，带小孩，人均预算 1000</span>
+            <span>帮我把毕业论文的推进计划排出来</span>
+            <span>预算 500 元去日本自由行 7 天</span>
+          </div>
+          <input type="text" aria-label="任务描述" autocomplete="off">
+        </div>
+        <button class="go" type="button">
+          开始规划
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 6h8M7 3l3 3-3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </form>
+
+      <div class="chips">
+        <button class="chip" type="button">周末去成都玩两天，带小孩，人均预算 1000</button>
+        <button class="chip" type="button">这周末去杭州玩两天，两个人</button>
+        <button class="chip" type="button">预算 500 元去日本自由行 7 天，含机票</button>
+      </div>
+
+      <!-- ② 3D 浮层舞台 -->
+      <div class="stage-wrap">
+        <div class="stage" id="stage">
+
+          <!-- 右侧溢出的渐变面板（最远的一层） -->
+          <div class="fc panel" style="left:522px;top:40px;width:154px;height:198px;z-index:1;--r:7deg;--d:.40s;--dur:12s;--rot:.6deg">
+            <span class="bolt">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M13.2 2.2 4.6 13.6h6.2L9.6 21.8l8.6-11.4h-6.2z"/>
+              </svg>
+            </span>
+          </div>
+
+          <!-- 左侧两张药丸卡 -->
+          <div class="fc pill p1" style="left:8px;top:64px;width:176px;z-index:2;--r:-7deg;--d:.10s;--dur:9s">
+            <span class="av">陈</span>
+            <span class="nm">成都 2 天</span>
+            <span class="tg">08</span>
+          </div>
+          <div class="fc pill p2" style="left:24px;top:126px;width:158px;z-index:3;--r:-5deg;--d:.20s;--dur:10.5s">
+            <span class="av">林</span>
+            <span class="nm">杭州 3 天</span>
+            <span class="tg">12</span>
+          </div>
+
+          <!-- 竖版照片卡 -->
+          <div class="fc photo" style="left:234px;top:22px;width:166px;height:206px;z-index:3;--r:-3deg;--d:.30s;--dur:11s">
+            <img src="assets/travel.jpg" alt="">
+          </div>
+
+          <!-- 两张白卡：图标 + 标签 + 大数字 + 状态药丸 -->
+          <div class="fc stat" style="left:96px;top:154px;width:158px;z-index:4;--r:-4deg;--d:.16s;--dur:9.5s">
+            <span class="tk a">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2.6 18.4l5.6-8 4 5.4 2.4-3 7 5.6z"/>
+              </svg>
+            </span>
+            <div class="lb">预算</div>
+            <div class="nb">¥1,280</div>
+            <span class="pl">人均</span>
+          </div>
+
+          <div class="fc stat" style="left:372px;top:8px;width:158px;z-index:4;--r:2.5deg;--d:.24s;--dur:12.5s">
+            <span class="tk b">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M2.4 11.6 21.6 3.2l-8.4 19.2-2.3-8.1z"/>
+              </svg>
+            </span>
+            <div class="lb">行程</div>
+            <div class="nb">3 天</div>
+            <span class="pl hot">待出发</span>
+          </div>
+
+          <!-- 深色玻璃卡：压在照片右下角 -->
+          <div class="fc glass" style="left:322px;top:150px;width:168px;z-index:5;--r:-2deg;--d:.34s;--dur:10s">
+            <span class="tk">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4.5 12.5l4.5 4.5L19.5 6.5"/>
+              </svg>
+            </span>
+            <span class="tx">
+              <span class="k1">已确认</span>
+              <span class="k2">5 项</span>
+            </span>
+            <span class="add">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                <path d="M8 3.5v9M3.5 8h9"/>
+              </svg>
+            </span>
+          </div>
+
+          <!-- 小圆徽章 -->
+          <div class="fc badge" style="left:214px;top:194px;width:40px;height:40px;z-index:6;--r:0deg;--d:.44s;--dur:13s"><i></i></div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- 品牌石堆水印 -->
+    <svg class="mark" width="260" height="260" viewBox="0 0 24 24" aria-hidden="true">
+      <ellipse cx="12" cy="16.8" rx="5.6" ry="2.7" fill="#1b1a18"/>
+      <ellipse cx="12" cy="12.2" rx="4.2" ry="2.3" fill="#1b1a18"/>
+      <ellipse cx="12" cy="8.3" rx="2.7" ry="1.8" fill="#1b1a18"/>
+    </svg>
+
+    <!-- 提交后的运行视图（退场动画的落点） -->
+    <div class="running">
+      <div class="echo-line">周末去成都玩两天，带小孩，人均预算 1000</div>
+      <div class="stages">
+        <span><b>理解任务</b></span><span class="bar"></span>
+        <span><b>查证数据</b></span><span class="bar"></span>
+        <span>编排计划</span>
+      </div>
+      <div class="probe-line"><span class="spin"></span>正在查天气…</div>
+    </div>
+
+    <!-- ④ 有结果时的样子 -->
+    <div class="result">
+      <h2>制定一份为期三个月的备考计划</h2>
+      <div class="facts"><span>4 个阶段</span><span>17 个步骤</span><span>总计约 13 周</span></div>
+      <div class="step"><span class="sid">01</span>确定考试类型与报名时间</div>
+      <div class="step"><span class="sid">02</span>摸底测评，定位薄弱科目</div>
+      <div class="step"><span class="sid">03</span>按周拆解教材与真题进度</div>
+    </div>
+  </main>
+</div>
+
+<div class="spec">
+  <h3>动画规格</h3>
+  <table>
+    <tr><th>元素</th><th>参数</th><th>意图</th></tr>
+    <tr><td>背景极光</td><td>两团 <code>blur(60px)</code> 色斑（380 / 340px），周期 19s / 24s，位移 ±50px，透明度 0.46</td><td>让画面是「活」的。聚焦输入框时提到 0.74 —— 效果和交互挂钩，不只是背景装饰</td></tr>
+    <tr><td>3D 倾斜</td><td><code>perspective: 1500px</code>；<code>rotateX 9° rotateY -13° rotateZ 1.6°</code>，加在**整块台面**上</td><td>参考图那种「产品在动」的观感来源。倾斜必须放在台面而不是逐张卡片，见下面的性能说明</td></tr>
+    <tr><td>鼠标视差</td><td>鼠标位置映射到 ±4° / ±5.5°，<code>transition .38s</code></td><td>倾斜跟着鼠标走，空间感是真的</td></tr>
+    <tr><td>卡片入场</td><td>上浮 10px + 缩放 .97 → 1，间隔 130ms，共 1s</td><td>一次性</td></tr>
+    <tr><td>卡片漂浮</td><td>±5px + 再偏 0.5°，周期 9 / 9.5 / 10 / 10.5 / 11 / 12 / 12.5 / 13s</td><td>相位与周期都错开，避免整齐划一的机械感。关键帧里必须带上各自的 <code>--r</code>，否则一跑动画卡片就被「扶正」</td></tr>
+    <tr><td>卡片混排</td><td>8 个元素、5 种形状：药丸卡 ×2 / 竖版照片卡 / 白卡 ×2（图标+大数字+状态药丸）/ 深色玻璃卡 / 渐变面板 / 小圆徽章</td><td>参考图那块区域没有连线、没有统一网格，是一堆不同形状的卡叠在一起。混排 + 叠压就是它「高级」的来源</td></tr>
+    <tr><td>各自角度</td><td><code>--r</code> 从 -7° 到 +7°，z-index 1→6 六层</td><td>统一角度会变成规整网格；角度不一致才有「随手撒在桌上」的感觉</td></tr>
+    <tr><td>照片卡</td><td>166×206，白 3px 描边 + 大投影，<code>object-fit: cover</code></td><td>整块拼贴的视觉锚点。没有照片会像占位图</td></tr>
+    <tr><td>渐变面板</td><td>径向点阵（13px 网格）+ 150° 线性渐变，右侧溢出 16px</td><td>参考图右边那块蓝紫面板的对应物。溢出边界让画面「没被框住」</td></tr>
+    <tr><td>配色切换</td><td>侧栏底部一个两段式分段控件（色块 + 文字），选中态白底 + 发丝线；折叠后竖排、只留色块</td><td>这是**产品里的真控件**，不是图纸开关。放侧栏是因为它是常驻偏好；放光区里的话一旦有了计划就够不着了</td></tr>
+    <tr><td>配色作用域</td><td>**只作用于光区**（极光 / 药丸卡 / 面板 / 徽章 / 图标）</td><td>外面那些彩色是**语义色**：绿=完成、玫瑰=要注意、琥珀=进行中。它们不能跟着主题变，否则「绿=完成」这条约定就废了。所以这不是妥协，是正确</td></tr>
+    <tr><td>切换过渡</td><td>瞬时（无过渡）</td><td>CSS 不能对 <code>linear-gradient()</code> 做过渡，渐变只能硬切。图标那种纯色倒是能过渡。要做交叉淡入淡出得叠两层极光 —— 两倍的 <code>blur()</code> 开销，前面已经证明这条路会掉层，不值</td></tr>
+    <tr><td>图形来源</td><td>图标是内联 SVG，照片是生成后压缩到 480×720 / 91 KB</td><td>图标用矢量：能跟着配色开关变色、任何缩放都锐利。照片只此一张</td></tr>
+    <tr><td>示例轮播</td><td>三条示例交叉淡入淡出，各 4.8s，含 4px 位移</td><td>就是你说的「渐入渐出」。顺带把固定的 placeholder 换成了会换的例子</td></tr>
+    <tr><td>石堆水印</td><td>260px，<code>opacity .07</code>，13s 呼吸（缩放 1→1.045）</td><td>品牌隐喻。项目没有图片素材，用大号 logo 当水印最稳</td></tr>
+    <tr><td>退场</td><td>有结果后：极光 opacity→0、舞台与 chips <code>display:none</code>，<code>.6s</code></td><td>光区只属于入口。工作区回到原来的克制</td></tr>
+  </table>
+
+  <div class="warn">
+    <b>四个必须知道的代价</b><br>
+    ① <b>会破现有令牌。</b> <code>styles.css</code> 开头写死了「没有渐变、没有阴影堆叠」。这里的做法是<b>把它关进 <code>.hero-zone</code></b>——入口可以炫，工作区保持安静。整页铺开会失去层次。<br>
+    ② <b>性能——这条不是理论风险，画这版图纸时就踩到了。</b>
+    第一版卡片上带了 <code>backdrop-filter</code>、极光是 <code>blur(84px)</code>、外面还套着 <code>preserve-3d</code>：
+    结果 <b>4 张卡片里只有 1 张被画出来</b>（DOM 里在、<code>opacity:1</code>、位置也对，就是不上屏）。
+    A/B 一测发现每次跑的结果还不一样 —— 这是合成层被随机丢弃，不是 CSS 写错。
+    去掉 <code>backdrop-filter</code>、blur 降到 60px 后稳了一版；
+    但把倾斜从 9° 加到 13° 时<b>又复发</b>—— 说明真正的元凶是 <code>preserve-3d</code>：
+    它让每张卡各自成为一个 3D 层，层数一多 Chromium 就开始丢。
+    <b>改法：倾斜加在整块台面上，去掉 <code>preserve-3d</code> 与 <code>translateZ</code>，
+    计划卡改用 <code>scale(1.04)</code> 表达「更近」。</b>视觉上几乎无差别，连跑 3 轮不再丢。<br>
+    ③ <b>触屏没有鼠标。</b> 视差要关掉（图纸里已按 <code>hover: hover</code> 自动降级），触屏上退化成静态倾斜。<br>
+    ④ <b>蓝紫不在现有色板里。</b> 勾上「换成品牌暖色」能对比：暖色版更贴现有气质但没那么「科技」，蓝紫更抓眼但和侧栏的暖灰底有轻微冲突。
+  </div>
+</div>
+
+<script>
+  const zone = document.getElementById('zone');
+  const ask = document.getElementById('ask');
+  const stage = document.getElementById('stage');
+
+  const bind = (id, key) => {
+    const el = document.getElementById(id);
+    el.addEventListener('change', () => {
+      if (key === 'palette') zone.dataset.palette = el.checked ? 'brand' : 'cool';
+      else if (key === 'state') {
+        zone.classList.remove('exiting');
+        zone.dataset.state = el.checked ? 'result' : 'empty';
+      }
+      else zone.dataset[key] = el.checked ? 'on' : 'off';
+    });
+  };
+  bind('c-state', 'state');
+
+  // 外观切换（这是要进产品的真控件，不是图纸开关）
+  const segs = [...document.querySelectorAll('.seg-i')];
+  const applyPalette = (pal) => {
+    zone.dataset.palette = pal;
+    segs.forEach((b) => b.setAttribute('aria-checked', String(b.dataset.pal === pal)));
+  };
+  segs.forEach((btn) => btn.addEventListener('click', () => applyPalette(btn.dataset.pal)));
+  // 左右方向键在两项间移动（radiogroup 的键盘约定）
+  document.querySelector('.seg').addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const i = segs.findIndex((b) => b.getAttribute('aria-checked') === 'true');
+    const next = segs[(i + (e.key === 'ArrowRight' ? 1 : segs.length - 1)) % segs.length];
+    applyPalette(next.dataset.pal);
+    next.focus();
+  });
+
+  // 鼠标视差：把指针位置映射成 ±1，写进 CSS 变量
+  zone.addEventListener('mousemove', (e) => {
+    if (zone.dataset.parallax === 'off') return;
+    const r = zone.getBoundingClientRect();
+    zone.style.setProperty('--px', (((e.clientX - r.left) / r.width) * 2 - 1).toFixed(3));
+    zone.style.setProperty('--py', (((e.clientY - r.top) / r.height) * 2 - 1).toFixed(3));
+  });
+  zone.addEventListener('mouseleave', () => {
+    zone.style.setProperty('--px', 0);
+    zone.style.setProperty('--py', 0);
+  });
+
+  // 轮播只在输入框为空时出现
+  const input = ask.querySelector('input');
+  const sync = () => { ask.dataset.typing = input.value.length > 0 ? '1' : '0'; };
+  input.addEventListener('input', sync);
+  sync();
+
+  // 退场动画：点「开始规划」或演示按钮都能触发
+  const heroZone = document.getElementById('zone');
+  let exitTimer = null;
+  const playExit = () => {
+    clearTimeout(exitTimer);
+    heroZone.dataset.state = 'empty';
+    heroZone.classList.remove('exiting');
+    // 强制回流，让 class 移除真的生效（否则连点两次不会重播）
+    void heroZone.offsetWidth;
+    heroZone.classList.add('exiting');
+    exitTimer = setTimeout(() => { heroZone.dataset.state = 'running'; }, 420);
+  };
+  document.getElementById('play-exit').addEventListener('click', playExit);
+  document.querySelector('.ask .go').addEventListener('click', playExit);
+  // 点运行视图可以回到空状态，方便反复看
+  document.querySelector('.running').addEventListener('click', () => {
+    clearTimeout(exitTimer);
+    heroZone.classList.remove('exiting');
+    heroZone.dataset.state = 'empty';
+  });
+
+  // 侧栏折叠（图纸里只是为了能看到折叠后的样子）
+  document.getElementById('rail-toggle').addEventListener('click', () => {
+    document.querySelector('.shell').classList.toggle('collapsed');
+  });
+
+  // 触屏 / 无指针设备：视差自动关掉（这一条是产品行为，不是图纸开关）
+  if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+    zone.dataset.parallax = 'off';
+  }
+</script>
+</body>
+</html>

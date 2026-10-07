@@ -21,6 +21,7 @@ __all__ = [
     "Phase",
     "Risk",
     "Plan",
+    "extract_extra_str",
     "extract_json_block",
     "parse_plan",
 ]
@@ -266,3 +267,21 @@ def parse_plan(text: str) -> tuple[Plan | None, str]:
     except Exception as exc:  # noqa: BLE001 - 需要把校验细节回传给模型修复
         return None, f"计划结构校验失败: {exc}"
     return plan, ""
+
+
+def extract_extra_str(text: str, key: str) -> str:
+    """从计划 JSON 里读一个**不属于 Plan 模型**的附加字段。
+
+    为什么要有这条旁路：``Plan`` 是评测的基准 schema，往里加字段会改变模型
+    行为，已有样本全部失效。而「这次改了什么」（``revision_summary``）是修订
+    功能自己的产物，没必要挤进 Plan。
+
+    Pydantic 默认忽略多余字段，所以模型多输出一个 key 完全不影响校验 ——
+    这里只是把它单独读出来。有测试守着「Plan 容忍多余 key」这个前提，
+    免得哪天 Pydantic 改了默认行为、这个功能静默失效。
+    """
+    obj = extract_json_block(text)
+    if obj is None:
+        return ""
+    value = obj.get(key)
+    return value.strip() if isinstance(value, str) else ""

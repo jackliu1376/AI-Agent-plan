@@ -79,10 +79,20 @@ CREATE TABLE IF NOT EXISTS sessions (
     result        TEXT,
     error         TEXT,
     clarification TEXT,
-    ok            INTEGER
+    ok            INTEGER,
+    revisions     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions (created_at DESC);
 """
+
+# 后加的列。``CREATE TABLE IF NOT EXISTS`` 不会给已存在的表补列，
+# 所以老库要靠下面的 _migrate() 显式 ALTER。
+#
+# 为什么不能「删库重建」：库里是用户的真实历史。加一列的成本是几毫秒，
+# 丢掉用户数据的成本是他再也不会信任这个功能。
+_ADDED_COLUMNS: dict[str, str] = {
+    "revisions": "TEXT",
+}
 
 
 def _env(name: str, default: str = "") -> str:
@@ -151,14 +161,31 @@ class SessionDB:
             conn.close()
 
     def _ensure_schema(self) -> None:
-        """懒建表。只做一次，避免每次读写都重放一遍 DDL。"""
+        """懒建表 + 补列。只做一次，避免每次读写都重放一遍 DDL。"""
         if self._ready:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
             conn.commit()
         self._ready = True
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """给已存在的表补上后加的列。
+
+        只做**加列**，不改类型、不删列 —— 加列是幂等且无损的，
+        其余操作都有丢数据的风险，而这个库里是用户的真实历史。
+
+        列名来自模块内的常量，不经过用户输入，因此直接拼进 DDL 是安全的
+        （SQLite 也不支持用参数占位符代替列名）。
+        """
+        existing = {
+            row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        for name, decl in _ADDED_COLUMNS.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {decl}")
 
     # -- 写 ---------------------------------------------------------------
 
@@ -172,10 +199,10 @@ class SessionDB:
                     """
                     INSERT INTO sessions
                         (id, task, status, created_at, updated_at,
-                         events, result, error, clarification, ok)
+                         events, result, error, clarification, ok, revisions)
                     VALUES
                         (:id, :task, :status, :created_at, :updated_at,
-                         :events, :result, :error, :clarification, :ok)
+                         :events, :result, :error, :clarification, :ok, :revisions)
                     ON CONFLICT(id) DO UPDATE SET
                         task          = excluded.task,
                         status        = excluded.status,
@@ -184,7 +211,8 @@ class SessionDB:
                         result        = excluded.result,
                         error         = excluded.error,
                         clarification = excluded.clarification,
-                        ok            = excluded.ok
+                        ok            = excluded.ok,
+                        revisions     = excluded.revisions
                     """,
                     row,
                 )
@@ -315,6 +343,11 @@ def _snapshot(session: "Session") -> dict[str, Any]:
             else None
         ),
         "ok": _ok_flag(session),
+        "revisions": (
+            json.dumps(session.revisions, ensure_ascii=False, default=str)
+            if session.revisions
+            else None
+        ),
     }
 
 
@@ -369,6 +402,8 @@ def _row_to_record(row: sqlite3.Row) -> dict[str, Any]:
     record["result"] = _loads(row["result"], None)
     record["error"] = row["error"]
     record["clarification"] = _loads(row["clarification"], None)
+    revisions = _loads(row["revisions"], [])
+    record["revisions"] = revisions if isinstance(revisions, list) else []
     return record
 
 

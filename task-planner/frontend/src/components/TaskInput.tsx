@@ -24,21 +24,30 @@ export function TaskInput({ onSubmit, disabled }: Props) {
   return (
     <>
       <form
-        className="ask"
+        className={`task-input${value.length > 0 ? ' typing' : ''}`}
         onSubmit={(event) => {
           event.preventDefault()
           submit(value)
         }}
       >
-        <input
-          type="text"
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-          placeholder="周末去成都玩两天，带小孩，人均预算 1000"
-          disabled={disabled}
-          maxLength={500}
-          aria-label="任务描述"
-        />
+        {/* 轮播**盖在** input 上，不是并排 ——
+            两者都 flex:1 的话会各分一半宽度，占位文字被截断。
+            有输入内容时轮播让位（.typing 类控制）。 */}
+        <div className="field">
+          <div className="carousel" aria-hidden="true">
+            {EXAMPLES.map((example) => (
+              <span key={example}>{example}</span>
+            ))}
+          </div>
+          <input
+            type="text"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            disabled={disabled}
+            maxLength={500}
+            aria-label="任务描述"
+          />
+        </div>
         <button type="submit" disabled={disabled || value.trim().length < 2}>
           开始规划
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
@@ -60,6 +69,8 @@ export function TaskInput({ onSubmit, disabled }: Props) {
             type="button"
             disabled={disabled}
             onClick={() => {
+              // 先填进输入框再提交：用户能看到「它替我写了什么」，
+              // 而不是莫名其妙就跑起来了
               setValue(example)
               submit(example)
             }}

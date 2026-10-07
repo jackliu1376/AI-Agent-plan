@@ -104,6 +104,10 @@ class Session:
     result: dict[str, Any] | None = None
     error: str | None = None
 
+    # 版本链。第 1 项是初版（feedback 为空串），之后每次修订追加一项。
+    # 「当前版本」始终是最后一项 —— 见 record_version()。
+    revisions: list[dict[str, Any]] = field(default_factory=list)
+
     # 当前待用户回答的问题（供前端渲染）
     clarification: dict[str, Any] | None = None
 
@@ -157,12 +161,14 @@ class Session:
     # -- 事件 -------------------------------------------------------------
 
     async def emit(self, event: Event) -> None:
-        """记录一个事件并唤醒订阅者。"""
+        """记录一个事件并唤醒订阅者。
+
+        **刻意不在这里更新 ``result``。** 谁算「当前版本」由 ``record_version()``
+        决定 —— 失败的修订不该挤掉一个可用的版本，这个判断放在驱动层更清楚。
+        """
         async with self._condition:
             self.events.append(event.to_dict())
             self.updated_at = time.monotonic()
-            if event.type == "plan_ready":
-                self.result = event.data
             self._condition.notify_all()
 
     async def stream(self, cursor: int = 0) -> AsyncIterator[dict[str, Any] | None]:
@@ -192,6 +198,52 @@ class Session:
                 return
             if not batch:
                 yield None  # 心跳
+
+    # -- 版本链 -----------------------------------------------------------
+
+    def record_version(self, result: dict[str, Any], *, feedback: str = "") -> int:
+        """登记一个版本，返回版本号（从 1 开始）。
+
+        **失败的产出也记。** 版本链是一次会话的完整日志，跳过失败的话，
+        界面（读 ``result``）和磁盘（读 ``revisions``）会看到不同的「当前版本」——
+        那是比「多了一版失败记录」难查得多的 bug。
+
+        失败的版本在界面上标红，用户点一下就能切回上一版。
+        """
+        self.revisions.append(
+            {
+                "seq": len(self.revisions) + 1,
+                "feedback": feedback,
+                "created_at": time.time(),
+                "result": result,
+            }
+        )
+        self.result = result
+        return len(self.revisions)
+
+    def revision_summaries(self) -> list[dict[str, Any]]:
+        """版本摘要 —— 给界面的版本菜单用，**不含计划正文**。
+
+        正文动辄几十 KB，塞进每次 ``GET /api/sessions/{id}`` 会让轮询接口变重。
+        要看某一版正文走 ``revision_result(seq)``。
+        """
+        return [
+            {
+                "seq": record["seq"],
+                "feedback": record["feedback"],
+                "created_at": record["created_at"],
+                "ok": bool(record["result"].get("ok")),
+                "step_count": record["result"].get("step_count", 0),
+                "revision_summary": record["result"].get("revision_summary", ""),
+            }
+            for record in self.revisions
+        ]
+
+    def revision_result(self, seq: int) -> dict[str, Any] | None:
+        for record in self.revisions:
+            if record["seq"] == seq:
+                return record["result"]
+        return None
 
     # -- 澄清：挂起与唤醒 -------------------------------------------------
 
@@ -441,13 +493,32 @@ def _hydrate(record: dict[str, Any]) -> Session:
     ):
         events.append(Event("error", {"message": error or INTERRUPTED_MESSAGE}).to_dict())
 
+    revisions = [
+        r
+        for r in (record.get("revisions") or [])
+        if isinstance(r, dict) and isinstance(r.get("result"), dict)
+    ]
+    result = record.get("result")
+    # 改造前落盘的会话只有 result、没有版本链。补一个「第 1 版」，
+    # 否则老记录打开后版本菜单是空的 —— 而用户会以为自己的历史丢了。
+    if not revisions and isinstance(result, dict):
+        revisions = [
+            {
+                "seq": 1,
+                "feedback": "",
+                "created_at": float(record.get("created_at") or time.time()),
+                "result": result,
+            }
+        ]
+
     return Session(
         id=record["session_id"],
         task=record.get("task", ""),
         status=status,  # type: ignore[arg-type]
         created_wall=float(record.get("created_at") or time.time()),
         events=events,
-        result=record.get("result"),
+        result=result,
         error=error,
         clarification=record.get("clarification"),
+        revisions=revisions,
     )

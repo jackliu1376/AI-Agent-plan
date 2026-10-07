@@ -31,15 +31,52 @@ interface Probe {
   status: ProbeStatus
   summary: string
   errorCode: string | null
+  /**
+   * 这次调用查的是什么（城市名 / 路线 / 网址）。
+   *
+   * 失败时必须显示出来 —— 否则用户看到的是「天气：未取到数据」，
+   * 分不清是**工具坏了**还是**这个城市没数据**。实测中用户看到
+   * 「查证了 10 项（4 项未取到）」时的第一反应是「为什么很多工具取不到数据」，
+   * 而真实情况是其中 4 项都在查同一个未收录的目的地。
+   * 带上主语之后，这一行会读作「天气 · 稻城：没有数据」—— 一眼看出是覆盖问题。
+   */
+  subject: string
+}
+
+/** 从工具参数里抽出「查的是什么」。认不出来就返回空串（不硬凑）。 */
+function subjectOf(args: Record<string, unknown>): string {
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+
+  const city = str(args.city)
+  if (city) {
+    // 有些工具同时带 city 和具体对象名（实时核对是「城市 + 景点名」）
+    const name = str(args.name)
+    return name ? `${city} · ${name}` : city
+  }
+
+  const origin = str(args.origin)
+  const destination = str(args.destination)
+  if (origin && destination) return `${origin} → ${destination}`
+
+  return str(args.url) || str(args.path) || ''
 }
 
 /** 把事件流压成「已查证」列表。同一工具被调用多次会得到多条。 */
 export function buildProbes(events: PlanEvent[]): Probe[] {
-  const probes: Probe[] = []
+  let probes: Probe[] = []
   // 每个工具名一个待配对队列 —— tool_call 与 tool_result 是按顺序配对的
-  const pending = new Map<string, number[]>()
+  let pending = new Map<string, number[]>()
 
   for (const event of events) {
+    if (event.type === 'run_started') {
+      // 一次会话可能有多次运行（初版 + 若干次修订），事件是追加的。
+      // 遇到新的 run_started 就清空 —— 否则修订完成后会显示两次运行的
+      // 查证记录，用户以为工具被重复调用了。
+      probes = []
+      pending = new Map()
+      continue
+    }
+
     if (event.type === 'tool_call') {
       const index = probes.length
       probes.push({
@@ -47,6 +84,7 @@ export function buildProbes(events: PlanEvent[]): Probe[] {
         status: 'running',
         summary: '',
         errorCode: null,
+        subject: subjectOf(event.data.args ?? {}),
       })
       const queue = pending.get(event.data.tool)
       if (queue === undefined) pending.set(event.data.tool, [index])
@@ -89,7 +127,14 @@ function ProbeRows({ probes }: { probes: Probe[] }) {
         const text = statusText(probe)
         return (
           <div className="probe-row" key={`${probe.tool}-${index}`}>
-            <span className="probe-what">{labelOf(probe.tool)}</span>
+            <span className="probe-what">
+              {labelOf(probe.tool)}
+              {probe.subject.length > 0 && (
+                <span className="probe-subj" title={probe.subject}>
+                  {probe.subject}
+                </span>
+              )}
+            </span>
             <span className="probe-out">
               {probe.status === 'err' ? (
                 <em>{probe.summary.length > 0 ? probe.summary : '未取到数据'}</em>

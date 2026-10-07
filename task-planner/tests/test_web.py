@@ -142,6 +142,35 @@ async def test_unknown_session_returns_404(make_app, client_factory) -> None:
     assert (await client.delete("/api/sessions/nope")).status_code == 404
 
 
+async def test_unknown_api_path_returns_404_not_405(make_app, client_factory) -> None:
+    """回归：未知的 /api 路径用 POST 访问，不能落到静态文件挂载点上。
+
+    ``StaticFiles`` 只服务 GET/HEAD，POST 会得到 405「Method Not Allowed」——
+    那个报错会把排查方向带偏：看起来像客户端用错了 HTTP 方法，
+    实际是后端没有这条路由（最常见的原因是改了代码但没重启服务）。
+
+    这不是假想：改增量修订那次，前端已经调 `/revisions` 而后端进程还是旧的，
+    界面上就只显示一行「Method Not Allowed」，看不出是版本没对齐。
+    """
+    client = client_factory(make_app(normal_script))
+
+    for path in ("/api/does-not-exist", "/api/sessions/x/unknown-action"):
+        resp = await client.post(path, json={})
+        assert resp.status_code == 404, f"POST {path} 落到了静态挂载点上"
+        assert "没有这个接口" in resp.json()["detail"]
+
+    # GET 也要走同一条兜底 —— 否则响应体是一段 HTML，前端解析不出 detail
+    assert (await client.get("/api/does-not-exist")).status_code == 404
+
+
+async def test_static_files_still_served(make_app, client_factory) -> None:
+    """兜底路由只吃 /api/*，不能把前端产物挡掉。"""
+    client = client_factory(make_app(normal_script))
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+
+
 # ---------------------------------------------------------------------------
 # 完整流程
 # ---------------------------------------------------------------------------

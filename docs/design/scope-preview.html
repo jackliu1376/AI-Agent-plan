@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cairn · 空状态改版影响范围</title>
+<style>
+:root {
+  --bg:#faf9f8; --surface:#fff; --surface-2:#f6f5f3;
+  --line:#eceae6; --line-2:#dedbd5;
+  --ink:#1b1a18; --ink-2:#6d6a63; --ink-3:#a6a29a;
+  --rose:#b8555f; --sage:#4d7c5c; --amber:#9a7420;
+  --sans:"Instrument Sans","Geist",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin:0; padding:34px 32px 70px;
+  background:var(--bg); color:var(--ink);
+  font-family:var(--sans); font-size:14px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+.page { max-width:1120px; margin:0 auto; }
+h1 { margin:0 0 6px; font-size:22px; font-weight:600; letter-spacing:-.01em; }
+.lede { margin:0 0 34px; color:var(--ink-2); }
+
+h2 {
+  display:flex; align-items:center; gap:10px;
+  margin:0 0 4px; font-size:15px; font-weight:600;
+}
+.num {
+  width:22px; height:22px; flex:none; display:grid; place-items:center;
+  border-radius:7px; background:var(--ink); color:#fff; font-size:11px; font-weight:600;
+}
+.sub { margin:0 0 16px 32px; font-size:13px; color:var(--ink-2); }
+
+.grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:22px; margin-bottom:44px; }
+.grid4 { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:16px; margin-bottom:44px; }
+
+figure { margin:0; }
+figure img {
+  display:block; width:100%; height:auto;
+  border:1px solid var(--line); border-radius:12px; background:#fff;
+}
+figcaption { margin-top:9px; font-size:12.5px; color:var(--ink-2); }
+figcaption b { font-weight:600; color:var(--ink); }
+
+.tag {
+  display:inline-flex; align-items:center; gap:5px;
+  margin-left:auto; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:500;
+}
+.tag.chg { background:#fdf3f4; color:var(--rose); }
+.tag.same { background:var(--surface-2); color:var(--ink-3); }
+
+.rule { height:1px; background:var(--line); margin:0 0 34px; }
+
+table { width:100%; border-collapse:collapse; font-size:13px; margin-bottom:34px; }
+th, td { padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+th { font-weight:600; color:var(--ink-2); font-size:12px; letter-spacing:.03em; }
+td:first-child { white-space:nowrap; color:var(--ink); font-weight:500; }
+td { color:var(--ink-2); }
+
+.note {
+  padding:14px 16px; border:1px solid var(--line); border-left:2px solid var(--amber);
+  border-radius:10px; background:var(--surface); font-size:13px; line-height:1.8;
+}
+.note b { color:var(--ink); }
+.note ol { margin:8px 0 0; padding-left:20px; }
+.note li { margin-bottom:6px; }
+.note li:last-child { margin-bottom:0; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>空状态改版 · 影响范围</h1>
+  <p class="lede">结论：<b>只有「还没提交任务」那一屏会变</b>。其余四个界面一行不动。</p>
+
+  <h2><span class="num">1</span>空状态 —— 唯一变化的地方<span class="tag chg">会改</span></h2>
+  <p class="sub">左边是现在的真实页面，右边是改完之后。</p>
+  <div class="grid2">
+    <figure>
+      <img src="../screenshots/10-empty.png" alt="改前的空状态">
+      <figcaption><b>改前</b>　示例 chips 以下是一整片空白（约 400px 高）</figcaption>
+    </figure>
+    <figure>
+      <img src="../screenshots/26-hero-aurora.png" alt="改后的空状态">
+      <figcaption><b>改后</b>　同一位置换成卡片拼贴 + 背景极光；输入框的 placeholder 变成轮播</figcaption>
+    </figure>
+  </div>
+
+  <div class="rule"></div>
+
+  <h2><span class="num">2</span>其余四个界面 —— 一行不动<span class="tag same">不变</span></h2>
+  <p class="sub">拼贴只在「没有计划」时出现；一旦提交任务，它整块消失，界面回到原来的样子。</p>
+  <div class="grid4">
+    <figure>
+      <img src="../screenshots/11-verifying.png" alt="运行中">
+      <figcaption><b>运行中</b><br>三段时间线 + 已查证列表</figcaption>
+    </figure>
+    <figure>
+      <img src="../screenshots/04-clarification.png" alt="等待澄清">
+      <figcaption><b>等待澄清</b><br>提问卡片</figcaption>
+    </figure>
+    <figure>
+      <img src="../../task-planner/docs/screenshots/21-composer.png" alt="有结果">
+      <figcaption><b>有结果</b><br>计划 + 底部输入区</figcaption>
+    </figure>
+    <figure>
+      <img src="../screenshots/13-collapsed.png" alt="侧栏折叠">
+      <figcaption><b>侧栏折叠</b><br>侧栏收成 60px</figcaption>
+    </figure>
+  </div>
+
+  <div class="rule"></div>
+
+  <h2><span class="num">3</span>状态对照</h2>
+  <table>
+    <tr><th>界面</th><th>变不变</th><th>说明</th></tr>
+    <tr><td>空状态</td><td style="color:var(--rose)">会改</td><td>新增卡片拼贴、背景极光、输入框 placeholder 换成轮播</td></tr>
+    <tr><td>运行中</td><td>不变</td><td>提交后 <code>started</code> 为真，拼贴整块不渲染</td></tr>
+    <tr><td>等待澄清</td><td>不变</td><td>同上</td></tr>
+    <tr><td>有结果</td><td>不变</td><td>计划视图、已查证折叠、底部输入区、版本菜单全都不动</td></tr>
+    <tr><td>失败 / 中断</td><td>不变</td><td>同上</td></tr>
+    <tr><td>侧栏（全部状态）</td><td>不变</td><td>品牌、折叠按钮、最近列表、悬浮删除、数据源状态都没碰</td></tr>
+    <tr><td>桌面版</td><td>不变</td><td>同一套前端产物，行为一致</td></tr>
+  </table>
+
+  <h2><span class="num">4</span>三个附带影响</h2>
+  <p class="sub">不算「别的页面变了」，但会动到空状态里已有的元素，先说清楚。</p>
+  <div class="note">
+    <b>① 输入框的 placeholder 会变成轮播。</b>
+    现在是固定的「周末去成都玩两天，带小孩，人均预算 1000」，改后三条示例每 4.8 秒交叉淡入淡出。<br><br>
+    <b>② 空状态的容器会从 620px 放宽到 660px。</b>
+    拼贴最宽要 660px。所以标题「想去哪？想做什么？」和输入框会各宽一点、位置略移 —— 这是唯一会被「顺带改到」的已有元素。<br><br>
+    <b>③ 窄屏（&lt;760px）需要降级。</b>
+    那时侧栏收成 60px、主画布很窄，660px 的拼贴放不下。计划是直接隐藏拼贴（只保留极光和轮播），或等比缩小。<b>这一条还没定</b>，你如果主要在大屏用，可以不做。
+  </div>
+
+</div>
+</body>
+</html>

@@ -48,11 +48,11 @@ from pydantic import BaseModel, Field
 
 from agent.config import Settings
 from agent.events import Event
-from agent.loop import Orchestrator
+from agent.loop import Orchestrator, revision_instruction, wrap_user_input
 from agent.run_log import record_run, settings_params
 from agent.tool_runner import LocalToolRunner
 from mcp_server.tools.base import load_all_tools, openai_tool_schemas
-from web.session import Session, SessionStore
+from web.session import LIVE_STATUSES, Session, SessionStore
 from web.session_db import SessionDB, is_enabled
 
 LLMFactory = Callable[[Settings], Any]
@@ -81,6 +81,43 @@ class AnswerRequest(BaseModel):
     answer: str = Field(min_length=1, max_length=1000)
 
 
+class RevisionRequest(BaseModel):
+    """一次增量修订。``feedback`` 是用户的原话（「第二天太赶了」）。"""
+
+    feedback: str = Field(min_length=1, max_length=2000, description="修改意见")
+
+
+class RevisionResponse(BaseModel):
+    ok: bool
+    session_id: str
+    seq: int
+    # 新一次运行的事件从这个下标开始。事件是**追加**的，
+    # 不复用这个游标的话客户端会把上一版的进度重放一遍。
+    cursor: int
+    events_url: str
+
+
+class RevisionSummary(BaseModel):
+    """版本菜单用的一行。不含计划正文。"""
+
+    seq: int
+    feedback: str
+    created_at: float
+    ok: bool
+    step_count: int
+    revision_summary: str = ""
+
+
+class RevisionView(BaseModel):
+    """某一版的完整内容。"""
+
+    session_id: str
+    seq: int
+    feedback: str
+    created_at: float
+    result: dict[str, Any]
+
+
 class SessionView(BaseModel):
     session_id: str
     task: str
@@ -92,6 +129,8 @@ class SessionView(BaseModel):
     # 事件一并返回：从磁盘恢复一条旧记录时，前端要用它渲染「查证了 N 项」。
     # 只给结果不给过程的话，恢复出来的页面会比刚跑完时少一块内容。
     events: list[dict[str, Any]] = Field(default_factory=list)
+    # 版本摘要（不含计划正文）。正文走 GET /sessions/{id}/revisions/{seq}。
+    revisions: list[RevisionSummary] = Field(default_factory=list)
 
 
 class SessionSummary(BaseModel):
@@ -312,6 +351,83 @@ def create_app(
             error=session.error,
             event_count=len(session.events),
             events=session.events,
+            revisions=session.revision_summaries(),
+        )
+
+    @app.get(
+        "/api/sessions/{session_id}/revisions/{seq}",
+        response_model=RevisionView,
+        summary="取某一版计划的完整内容",
+    )
+    async def get_revision(session_id: str, seq: int) -> Any:
+        """版本菜单里切到某一版时用它拿正文。
+
+        单独开一个接口而不是塞进 ``SessionView``：正文动辄几十 KB，
+        而 ``GET /sessions/{id}`` 是要被轮询的。
+        """
+        session = _require(app, session_id)
+        result = session.revision_result(seq)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"没有第 {seq} 版。")
+
+        record = next((r for r in session.revisions if r["seq"] == seq), {})
+        return RevisionView(
+            session_id=session.id,
+            seq=seq,
+            feedback=record.get("feedback", ""),
+            created_at=record.get("created_at", 0.0),
+            result=result,
+        )
+
+    @app.post(
+        "/api/sessions/{session_id}/revisions",
+        response_model=RevisionResponse,
+        summary="按用户反馈增量修订计划",
+    )
+    async def create_revision(
+        session_id: str, payload: RevisionRequest, request: Request
+    ) -> Any:
+        """在上一版计划的基础上改，而不是重新规划。
+
+        三条前置检查都不是形式主义：
+
+        - **限流**：每次修订都是一次完整的 LLM 调用，和新建会话等价。
+        - **不能正在跑**：同一会话同时跑两次修订会互相覆盖事件与版本，
+          而且 ``Orchestrator._last_result`` 是实例级状态，本来就不支持并发。
+        - **必须有可改的计划**：没产出过计划的会话无从「增量」。
+        """
+        client = _client_key(request, trust_proxy=app.state.trust_proxy)
+        if not app.state.limiter.allow(client):
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"请求过于频繁。本服务按 IP 限流（{rate_limit} 次 / "
+                    f"{int(rate_window // 60)} 分钟），请 {app.state.limiter.retry_after(client)} 秒后再试。"
+                ),
+            )
+
+        session = _require(app, session_id)
+        if session.status in LIVE_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"这次规划还在运行（{session.status}），等它跑完再提修改。",
+            )
+        if session.result is None:
+            raise HTTPException(
+                status_code=409, detail="这条记录还没有可修改的计划。"
+            )
+
+        cursor = len(session.events)
+        task = asyncio.create_task(_drive_revision(app, session, payload.feedback))
+        app.state.tasks[session.id] = task
+        task.add_done_callback(lambda _: app.state.tasks.pop(session.id, None))
+
+        return RevisionResponse(
+            ok=True,
+            session_id=session.id,
+            seq=len(session.revisions) + 1,
+            cursor=cursor,
+            events_url=f"/api/sessions/{session.id}/events",
         )
 
     @app.get("/api/sessions/{session_id}/events", summary="订阅事件流（SSE）")
@@ -360,6 +476,23 @@ def create_app(
         if not dropped:
             raise HTTPException(status_code=404, detail="会话不存在或已过期。")
         return {"ok": True, "session_id": session_id}
+
+    # -- 未知 /api 路径兜底 -------------------------------------------------
+    #
+    # 必须放在所有真实路由**之后**、静态挂载**之前**（FastAPI 按注册顺序匹配）。
+    #
+    # 没有它的话，POST 一个未注册的 /api 路径会落到下面的 StaticFiles 上，
+    # 而它只服务 GET/HEAD —— 于是返回 405「Method Not Allowed」。
+    # 这个报错会把排查方向带偏：看起来像客户端用错了 HTTP 方法，
+    # 实际是后端根本没有这条路由（最常见的原因是服务没重启）。
+    # 有测试钉住这一条。
+    @app.api_route(
+        "/api/{rest:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+        include_in_schema=False,
+    )
+    async def api_not_found(rest: str) -> Any:
+        raise HTTPException(status_code=404, detail=f"没有这个接口：/api/{rest}")
 
     # -- 托管前端构建产物（存在才挂载）------------------------------------
 
@@ -421,15 +554,75 @@ async def _janitor_loop(app: FastAPI, interval: float) -> None:
             pass
 
 
-async def _drive_session(app: FastAPI, session: Session) -> None:
-    """后台驱动一次规划，把事件写进会话。
+def _revision_history(session: Session) -> list[dict[str, Any]]:
+    """构造回灌给模型的上下文：原任务 + 上一版的完整输出。
+
+    给的是 ``raw_text``（Markdown 正文 + JSON 块）而不是 ``plan`` 的纯 JSON：
+    模型看得到上一版「长什么样」，改起来才像**改**而不是重写。
+    只给结构化 JSON 的话，措辞、阶段命名这些它都会重新发挥一遍。
+
+    拿不到上一版文本就返回空列表 —— 那时修订退化成一次普通规划，
+    比塞一个空的 assistant 轮次进去要好。
+    """
+    previous = session.result or {}
+    text = str(previous.get("raw_text") or previous.get("markdown") or "").strip()
+    if not text:
+        return []
+    return [
+        {"role": "user", "content": wrap_user_input(session.task)},
+        {"role": "assistant", "content": text},
+    ]
+
+
+async def _settle_run(
+    app: FastAPI,
+    session: Session,
+    orch: Orchestrator,
+    *,
+    source: str,
+    feedback: str = "",
+) -> None:
+    """一次运行的收尾：登记版本 + 判定状态 + 写运行记录。
+
+    **初版与修订共用这一条路径。** 两处逻辑一旦分叉，迟早会出现
+    「修订路径忘了登记版本」或「状态判定不一致」这类只在某一条路径上复现的 bug，
+    而这类 bug 最难查 —— 因为两条路径单独看都对。
 
     状态语义：
 
     - ``failed`` —— **基础设施**失败（LLM 抛异常、运行期崩溃），拿不到任何结果
     - ``done``   —— 运行正常结束。计划是否可用看 ``result.ok``
       （模型可能产出不合规 JSON 或含环的依赖图，那是模型的问题，不是服务的）
+
+    注意 ``done`` 也可能对应 ``ok=false`` —— 版本链里照样记一笔，
+    界面上标红，用户点一下就能切回上一版。
     """
+    result = orch.last_result
+    if result is not None:
+        session.record_version(result.to_event_data(), feedback=feedback)
+        # 运行记录：成功和失败都要记 —— 失败样本才是排查的重点
+        record_run(
+            result,
+            session.task,
+            source=source,
+            model=app.state.settings.model,
+            params=settings_params(app.state.settings),
+        )
+
+    if result is None:  # pragma: no cover - run_stream 必然产出结果
+        session.error = "运行未产出结果"
+        await session.set_status("failed")
+    elif result.trace.output_status == "runtime_error":
+        session.error = result.trace.error or "运行期异常"
+        await session.set_status("failed")
+    else:
+        # 上一次可能留下过错误（比如上一轮修订失败），这次成功要把它清掉
+        session.error = None
+        await session.set_status("done")
+
+
+async def _drive_session(app: FastAPI, session: Session) -> None:
+    """后台驱动一次规划（初版），把事件写进会话。"""
     await session.set_status("running")
     try:
         llm = app.state.llm_factory(app.state.settings)
@@ -442,29 +635,49 @@ async def _drive_session(app: FastAPI, session: Session) -> None:
         async for event in orch.run_stream(session.task):
             await session.emit(event)
 
-        result = orch.last_result
-        if result is None:  # pragma: no cover - run_stream 必然产出结果
-            session.error = "运行未产出结果"
-            await session.set_status("failed")
-        elif result.trace.output_status == "runtime_error":
-            session.error = result.trace.error or "运行期异常"
-            await session.set_status("failed")
-        else:
-            await session.set_status("done")
-
-        # 运行记录：成功和失败都要记 —— 失败样本才是排查的重点
-        if result is not None:
-            record_run(
-                result,
-                session.task,
-                source="web",
-                model=app.state.settings.model,
-                params=settings_params(app.state.settings),
-            )
+        await _settle_run(app, session, orch, source="web")
     except asyncio.CancelledError:
         await session.set_status("failed")
         raise
     except Exception as exc:  # noqa: BLE001 - 兜底：驱动层自身出错也要反映到状态
+        session.error = f"{type(exc).__name__}: {exc}"
+        await session.emit(Event("error", {"message": session.error}))
+        await session.set_status("failed")
+
+
+async def _drive_revision(app: FastAPI, session: Session, feedback: str) -> None:
+    """按用户反馈做一次**增量修订**。
+
+    与 ``_drive_session`` 的差别只有两处：注入 ``history``（上一版计划）、
+    以及把产出登记成一个新版本。**其余全走同一条 ``run_stream`` 管道** ——
+    护栏（预算门控、DAG 校验、修复重试、注入检测）一个都不能少。
+    开一条「直接改 JSON」的旁路，就等于给整个护栏体系留了个后门。
+
+    本期刻意**不做证据复用**：上次查的天气/票价一律重查。
+    慢一点，但绝对不会出现「用过时数据算出来的新计划」——
+    那种错误没有任何测试能发现，而它恰好是这个项目一直在防的。
+    """
+    await session.set_status("running")
+    try:
+        llm = app.state.llm_factory(app.state.settings)
+        orch = Orchestrator(
+            llm,
+            LocalToolRunner(),
+            app.state.settings,
+            ask_user=session.ask_user,
+        )
+        async for event in orch.run_stream(
+            feedback,
+            history=_revision_history(session),
+            instruction=revision_instruction(feedback),
+        ):
+            await session.emit(event)
+
+        await _settle_run(app, session, orch, source="revision", feedback=feedback)
+    except asyncio.CancelledError:
+        await session.set_status("failed")
+        raise
+    except Exception as exc:  # noqa: BLE001
         session.error = f"{type(exc).__name__}: {exc}"
         await session.emit(Event("error", {"message": session.error}))
         await session.set_status("failed")

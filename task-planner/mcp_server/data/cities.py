@@ -101,6 +101,112 @@ _CN: list[City] = [
     City("大理", "Dali", 25.6065, 100.2676, "中国", "Asia/Shanghai"),
     City("香格里拉", "Shangri-La", 27.8253, 99.7065, "中国", "Asia/Shanghai"),
     City("西双版纳", "Xishuangbanna", 22.0017, 100.7971, "中国", "Asia/Shanghai", aliases=("景洪",)),
+
+    # 知名旅游目的地：县级市 / 林区 / 景区，GeoNames 索引里没有或名字不规范。
+    # 这些是用户真会问的目的地（「去漠河看极光」「喀纳斯几月最美」），
+    # 不补的话景点库挂不上城市、城市解析也认不出。
+    City("漠河", "Mohe", 52.9704, 122.5389, "中国", "Asia/Shanghai"),
+    City("神农架", "Shennongjia", 31.7446, 110.6759, "中国", "Asia/Shanghai"),
+    City("凤凰", "Fenghuang", 27.9482, 109.5996, "中国", "Asia/Shanghai",
+         aliases=("凤凰古城", "湘西")),
+    City("荔波", "Libo", 25.4124, 107.8815, "中国", "Asia/Shanghai"),
+    City("腾冲", "Tengchong", 25.0176, 98.4903, "中国", "Asia/Shanghai"),
+    City("元阳", "Yuanyang", 23.2226, 102.8327, "中国", "Asia/Shanghai"),
+    City("阿里", "Ngari", 32.5000, 80.1000, "中国", "Asia/Shanghai", aliases=("狮泉河",)),
+    City("格尔木", "Golmud", 36.4067, 94.9033, "中国", "Asia/Shanghai"),
+    City("青海湖", "Qinghai Lake", 36.8900, 100.1800, "中国", "Asia/Shanghai"),
+    City("喀纳斯", "Kanas", 48.7000, 87.0000, "中国", "Asia/Shanghai", aliases=("布尔津",)),
+    City("婺源", "Wuyuan", 29.2476, 117.8618, "中国", "Asia/Shanghai"),
+    City("都江堰", "Dujiangyan", 30.9920, 103.6200, "中国", "Asia/Shanghai"),
+    City("吉首", "Jishou", 28.3193, 109.7335, "中国", "Asia/Shanghai", aliases=("湘西州",)),
+
+    # --- 景区 / 目的地级（不是行政市，但用户会直接说出口）---
+    #
+    # 旅游规划的真实对象经常不是「城市」而是「景区」：用户说「去川西」
+    # 「去稻城亚丁」「去峨眉山」，不会说「去康定市」「去峨眉山市」。
+    # GeoNames 的城市索引里没有这些名字，导致解析失败、下游工具全部 NOT_FOUND。
+    #
+    # 实测踩到：查「稻城」时天气、交通、景点库三个工具**同时**失败，
+    # 因为它们在同一个解析层上。补在这里，一次解决三个工具。
+    #
+    # 别名要覆盖用户的多种说法（「稻城亚丁」/「亚丁」/「稻城」是同一个地方）。
+
+    # 川西 / 甘孜阿坝
+    City("稻城", "Daocheng", 29.0378, 100.2977, "中国", "Asia/Shanghai",
+         aliases=("稻城亚丁", "亚丁")),
+    City("理塘", "Litang", 29.9962, 100.2699, "中国", "Asia/Shanghai"),
+    City("丹巴", "Danba", 30.8770, 101.8866, "中国", "Asia/Shanghai", aliases=("甲居藏寨",)),
+    City("色达", "Seda", 32.2686, 100.3327, "中国", "Asia/Shanghai", aliases=("五明佛学院",)),
+    City("新都桥", "Xinduqiao", 30.0561, 101.4964, "中国", "Asia/Shanghai"),
+    City("四姑娘山", "Mount Siguniang", 31.0799, 102.8966, "中国", "Asia/Shanghai",
+         aliases=("日隆",)),
+    City("若尔盖", "Zoige", 33.5778, 102.9631, "中国", "Asia/Shanghai"),
+    City("红原", "Hongyuan", 32.7906, 102.5456, "中国", "Asia/Shanghai"),
+    City("泸定", "Luding", 29.9145, 102.2353, "中国", "Asia/Shanghai", aliases=("海螺沟",)),
+    City("黄龙", "Huanglong", 32.7500, 103.8200, "中国", "Asia/Shanghai"),
+    City("贡嘎山", "Mount Gongga", 29.5958, 101.8789, "中国", "Asia/Shanghai"),
+    City("峨眉山", "Mount Emei", 29.5200, 103.3300, "中国", "Asia/Shanghai"),
+    City("青城山", "Mount Qingcheng", 30.9000, 103.5700, "中国", "Asia/Shanghai"),
+    City("蜀南竹海", "Shunan Bamboo Sea", 28.4500, 105.0000, "中国", "Asia/Shanghai"),
+
+    # 云南 / 贵州
+    City("泸沽湖", "Lugu Lake", 27.7000, 100.7800, "中国", "Asia/Shanghai"),
+    City("普者黑", "Puzhehei", 24.1000, 104.1000, "中国", "Asia/Shanghai"),
+    City("黄果树", "Huangguoshu", 25.9900, 105.6800, "中国", "Asia/Shanghai",
+         aliases=("黄果树瀑布",)),
+    City("西江千户苗寨", "Xijiang Miao Village", 26.4900, 108.1800, "中国", "Asia/Shanghai",
+         aliases=("千户苗寨",)),
+
+    # 江南古镇 / 水乡
+    City("乌镇", "Wuzhen", 30.7450, 120.4900, "中国", "Asia/Shanghai"),
+    City("西塘", "Xitang", 30.9450, 120.8900, "中国", "Asia/Shanghai"),
+    City("周庄", "Zhouzhuang", 31.1150, 120.8500, "中国", "Asia/Shanghai"),
+    City("同里", "Tongli", 31.1570, 120.7160, "中国", "Asia/Shanghai"),
+    City("千岛湖", "Qiandao Lake", 29.6050, 119.0400, "中国", "Asia/Shanghai"),
+    City("普陀山", "Mount Putuo", 30.0100, 122.3900, "中国", "Asia/Shanghai"),
+    City("雁荡山", "Yandang Mountain", 28.3700, 121.0500, "中国", "Asia/Shanghai"),
+
+    # 安徽 / 江西 / 福建
+    City("宏村", "Hongcun", 29.9060, 117.9930, "中国", "Asia/Shanghai"),
+    City("西递", "Xidi", 29.9200, 117.9900, "中国", "Asia/Shanghai"),
+    City("九华山", "Mount Jiuhua", 30.4800, 117.8100, "中国", "Asia/Shanghai"),
+    City("庐山", "Mount Lu", 29.5500, 115.9800, "中国", "Asia/Shanghai"),
+    City("三清山", "Mount Sanqing", 28.9100, 118.0600, "中国", "Asia/Shanghai"),
+    City("龙虎山", "Mount Longhu", 28.1100, 116.9800, "中国", "Asia/Shanghai"),
+    City("太姥山", "Mount Taimu", 27.1000, 120.2000, "中国", "Asia/Shanghai"),
+
+    # 山东 / 山西 / 陕西 / 河北
+    City("曲阜", "Qufu", 35.5800, 116.9900, "中国", "Asia/Shanghai", aliases=("三孔",)),
+    City("华山", "Mount Hua", 34.4800, 110.0800, "中国", "Asia/Shanghai"),
+    City("五台山", "Mount Wutai", 39.0000, 113.5900, "中国", "Asia/Shanghai"),
+    City("壶口瀑布", "Hukou Waterfall", 36.1500, 110.4400, "中国", "Asia/Shanghai"),
+    City("北戴河", "Beidaihe", 39.8300, 119.5000, "中国", "Asia/Shanghai"),
+    City("白洋淀", "Baiyangdian", 38.9300, 115.9900, "中国", "Asia/Shanghai"),
+
+    # 湖南 / 湖北
+    City("衡山", "Mount Heng", 27.2500, 112.7000, "中国", "Asia/Shanghai",
+         aliases=("南岳",)),
+    City("武当山", "Mount Wudang", 32.4000, 111.0000, "中国", "Asia/Shanghai"),
+
+    # 广西 / 广东 / 海南
+    City("龙脊梯田", "Longji Rice Terraces", 25.7500, 110.1200, "中国", "Asia/Shanghai",
+         aliases=("龙胜",)),
+    City("涠洲岛", "Weizhou Island", 21.0400, 109.1200, "中国", "Asia/Shanghai"),
+    City("丹霞山", "Mount Danxia", 25.0300, 113.7500, "中国", "Asia/Shanghai"),
+    City("开平", "Kaiping", 22.3700, 112.7000, "中国", "Asia/Shanghai", aliases=("开平碉楼",)),
+    City("蜈支洲岛", "Wuzhizhou Island", 18.3100, 109.7600, "中国", "Asia/Shanghai"),
+
+    # 西北 / 西南
+    City("茶卡盐湖", "Chaka Salt Lake", 36.7000, 99.0800, "中国", "Asia/Shanghai"),
+    City("那拉提", "Nalati", 43.3200, 84.0000, "中国", "Asia/Shanghai"),
+    City("赛里木湖", "Sayram Lake", 44.6000, 81.2000, "中国", "Asia/Shanghai"),
+    City("巴音布鲁克", "Bayinbuluke", 43.0300, 84.1500, "中国", "Asia/Shanghai"),
+    City("纳木错", "Namtso", 30.7000, 90.6000, "中国", "Asia/Shanghai"),
+    City("珠峰大本营", "Everest Base Camp", 28.1400, 86.8500, "中国", "Asia/Shanghai",
+         aliases=("珠穆朗玛峰",)),
+    City("额济纳", "Ejin", 41.9600, 101.0600, "中国", "Asia/Shanghai", aliases=("胡杨林",)),
+    City("武隆", "Wulong", 29.3300, 107.7600, "中国", "Asia/Shanghai"),
+
     City("香港", "Hong Kong", 22.3193, 114.1694, "中国", "Asia/Hong_Kong", aliases=("HongKong",)),
     City("澳门", "Macau", 22.1987, 113.5439, "中国", "Asia/Macau", aliases=("Macao",)),
     City("台北", "Taipei", 25.0330, 121.5654, "中国台湾", "Asia/Taipei"),

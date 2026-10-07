@@ -14,6 +14,8 @@
 import type {
   CreateSessionResponse,
   PlanEvent,
+  RevisionResponse,
+  RevisionView,
   SessionListResponse,
   SessionView,
   ToolsResponse,
@@ -24,6 +26,24 @@ const BASE = '/api'
 // 普通请求的超时。没有它的话，服务端挂起时 fetch 会永久 pending，
 // 界面一直卡在 loading 且没有任何反馈。
 const REQUEST_TIMEOUT_MS = 15000
+
+/**
+ * 带状态码的请求错误。
+ *
+ * 为什么要状态码：有些失败**不是**「操作没成功」，而是「服务端版本不对」。
+ * 最典型的是 405 —— 见 `usePlanningSession.revise()`：改了前端但没重启后端时，
+ * 新加的接口会落到静态文件挂载点上，返回 405。这时该提示用户重启服务，
+ * 而不是把这次修订标成失败。
+ */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let resp: Response
@@ -48,7 +68,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* 响应不是 JSON，保留状态码 */
     }
-    throw new Error(detail)
+    throw new ApiError(detail, resp.status)
   }
 
   return (await resp.json()) as T
@@ -74,6 +94,28 @@ export function getSession(sessionId: string): Promise<SessionView> {
  */
 export function listSessions(limit = 20): Promise<SessionListResponse> {
   return request<SessionListResponse>(`/sessions?limit=${limit}`)
+}
+
+/**
+ * 提交一次增量修订。
+ *
+ * 返回的 `cursor` 很重要：会话的事件是**追加**的，从 0 开始订阅会把
+ * 上一版的进度重放一遍（「已查证」列表也会跟着串）。拿这个游标开流，
+ * 才只收到本次修订的过程。
+ */
+export function createRevision(
+  sessionId: string,
+  feedback: string,
+): Promise<RevisionResponse> {
+  return request<RevisionResponse>(`/sessions/${sessionId}/revisions`, {
+    method: 'POST',
+    body: JSON.stringify({ feedback }),
+  })
+}
+
+/** 取某一版的完整计划。用于版本菜单里切回旧版。 */
+export function getRevision(sessionId: string, seq: number): Promise<RevisionView> {
+  return request<RevisionView>(`/sessions/${sessionId}/revisions/${seq}`)
 }
 
 export function submitAnswer(sessionId: string, answer: string): Promise<{ ok: boolean }> {
@@ -112,9 +154,13 @@ const TERMINAL: ReadonlySet<PlanEvent['type']> = new Set(['plan_ready', 'error']
 const RECONNECT_DELAY_MS = 1500
 const MAX_RECONNECTS = 5
 
-export function openEventStream(sessionId: string, handlers: StreamHandlers): StreamHandle {
+export function openEventStream(
+  sessionId: string,
+  handlers: StreamHandlers,
+  startCursor = 0,
+): StreamHandle {
   let source: EventSource | null = null
-  let cursor = 0
+  let cursor = startCursor
   let reconnects = 0
   let closed = false
   let retryTimer: ReturnType<typeof setTimeout> | null = null

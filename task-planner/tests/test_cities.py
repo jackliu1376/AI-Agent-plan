@@ -498,6 +498,59 @@ def test_attractions_also_covers_international_cities() -> None:
         assert expected in cities
 
 
+def test_attractions_accepts_city_aliases() -> None:
+    """别名也要能查到景点。
+
+    库里存的是策展表的主名（``稻城``），而用户会说别名（``稻城亚丁``）。
+    天气和交通工具都走 ``lookup_city``，所以别名本来就通；但景点库原来是
+    ``WHERE city = ?`` 精确匹配 —— 于是同一个地名在天气里能用、
+    在景点库里 NOT_FOUND。
+
+    实测踩到：用户说「我想去稻城亚丁」，9 项查证里 5 项失败，
+    而稻城的 20 条景点**确实在库里**。
+    """
+    from mcp_server.tools.base import invoke
+
+    for alias in ("稻城亚丁", "亚丁"):
+        result = invoke("query_attractions_db", {"city": alias, "limit": 3})
+        assert result.ok, f"别名「{alias}」查不到：{result.error.message}"
+        assert result.data["items"]
+
+
+def test_reseed_does_not_overwrite_richer_db(tmp_path) -> None:
+    """库里的数据比代码里的多时**不能重建**。
+
+    场景：改了 seed 数据后，跑着的旧进程内存里还是旧的 ``SEED_ROWS``，
+    而磁盘上的库已被新代码重建过（行数更多）。按原来的
+    ``count != len(SEED_ROWS)`` 判断，旧进程会把库重建成旧数据 ——
+    用户看到「明明补了数据却查不到」，而且数据被反复覆盖。
+    """
+    from mcp_server.data import seed
+
+    db = tmp_path / "attractions.db"
+    seed.seed(db)
+
+    # 造一个「比代码里更多」的库：把行数改大
+    import sqlite3
+
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO attractions (city, country, name, tags, price, currency,"
+            " duration_hours, rating, kid_friendly, open_hours, note, verified_at, source)"
+            " VALUES ('测试城','中国','测试景点','测试',0,'CNY',1.0,4.0,1,'全天','','2026-10','manual')"
+        )
+        conn.commit()
+
+    assert not seed._needs_reseed(db), "库比代码新时不该重建（会被旧数据覆盖）"
+
+    # 反过来：库比代码旧 → 应该重建（正常升级路径）
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM attractions WHERE city = '测试城'")
+        conn.execute("DELETE FROM attractions WHERE id IN (SELECT id FROM attractions LIMIT 5)")
+        conn.commit()
+    assert seed._needs_reseed(db), "库比代码旧时应该重建"
+
+
 def test_attractions_dataset_size() -> None:
     from mcp_server.data.seed import SEED_ROWS, covered_cities
 
@@ -554,7 +607,11 @@ def test_mop_currency_can_be_converted(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_attractions_not_found_message_guides_the_model() -> None:
-    result = invoke("query_attractions_db", {"city": "开罗"})
+    """库不覆盖的城市要给可执行的提示。
+
+    用雷克雅未克（不在 250 城名单里）而不是开罗 —— 开罗已随海外城市扩库补上了。
+    """
+    result = invoke("query_attractions_db", {"city": "雷克雅未克"})
     assert not result.ok
     assert result.error.code == "NOT_FOUND"
     assert "不要凭记忆编造" in result.error.message

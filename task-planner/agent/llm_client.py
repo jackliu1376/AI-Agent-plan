@@ -90,6 +90,20 @@ class DeepSeekClient:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
+        # 透传服务商私有参数（见 Settings.extra_body 的说明）。
+        # 解析失败就明确报错 —— 静默忽略的话，用户以为关掉了思考，
+        # 实际还在跑，只会觉得「怎么这么慢」而查不出原因。
+        if self.settings.extra_body:
+            try:
+                parsed = json.loads(self.settings.extra_body)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"LLM_EXTRA_BODY 不是合法 JSON：{exc}。"
+                    '正确写法例：LLM_EXTRA_BODY=\'{"thinking":{"type":"disabled"}}\''
+                ) from exc
+            if isinstance(parsed, dict):
+                kwargs["extra_body"] = parsed
+
         completion = self._client.chat.completions.create(**kwargs)
 
         if not completion.choices:
@@ -129,6 +143,15 @@ class DeepSeekClient:
         if raw_tool_calls:
             raw_message["tool_calls"] = raw_tool_calls
 
+        # 推理模型（MiMo 默认开启、GLM 传 thinking 时）会在返回 tool_calls 的
+        # **同时**返回 reasoning_content。MiMo 官方文档建议多轮工具调用时把它
+        # 一并回传 —— 丢掉等于让模型每一轮都从头「重新想」一遍。
+        #
+        # 只在字段确实存在时带上：DeepSeek 不返回这个字段，所以对它零影响。
+        reasoning = getattr(msg, "reasoning_content", None)
+        if isinstance(reasoning, str) and reasoning:
+            raw_message["reasoning_content"] = reasoning
+
         usage = {}
         if completion.usage is not None:
             usage = {
@@ -144,3 +167,15 @@ class DeepSeekClient:
             usage=usage,
             finish_reason=choice.finish_reason or "",
         )
+
+    def close(self) -> None:
+        """释放底层 HTTP 连接池。
+
+        OpenAI SDK 内部持有 ``httpx.Client``。不显式关闭的话，连接会一直挂到
+        GC 回收为止 —— Web 层每次运行都新建一个 client，会话一多就是
+        fd / socket 持续累积。**绝不抛异常**：收尾失败不该影响调用方。
+        """
+        try:
+            self._client.close()
+        except Exception:  # noqa: BLE001 - 见上
+            pass

@@ -38,7 +38,9 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing, contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from mcp_server.data.cities import lookup_city
 from mcp_server.tools.base import PROJECT_ROOT, env
@@ -697,11 +699,19 @@ def _needs_reseed(path: Path) -> bool:
     return count != len(SEED_ROWS)
 
 
-def connect(db_path: Path | None = None) -> sqlite3.Connection:
-    """打开数据库连接。
+@contextmanager
+def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
+    """打开数据库连接（**上下文管理器，退出时关闭**）。
 
     - 默认库：文件缺失、结构变化或与种子数据行数不一致时自动重建（保证 clone 即可运行）。
     - 自定义库（通过 ``ATTRACTIONS_DB`` 指定）：只补种缺失文件，不覆盖用户数据。
+
+    为什么返回上下文管理器而不是裸 ``Connection``：
+    ``with sqlite3.connect(...) as conn`` **只提交事务，不关闭连接** ——
+    这是 sqlite3 的常见误解。连接会一直挂到 CPython 引用计数回收为止；
+    一旦被异常栈或 traceback 持有，Windows 上重播库时的 ``DROP TABLE``
+    就会报 ``database is locked``。这里在 ``finally`` 里显式关闭，
+    调用方写 ``with connect() as conn:`` 即可，不用自己记得关。
     """
     path = db_path or resolve_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -712,7 +722,10 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def seed(path: Path | None = None) -> int:
@@ -720,7 +733,8 @@ def seed(path: Path | None = None) -> int:
     target = path or resolve_db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     placeholders = ", ".join("?" for _ in COLUMNS)
-    with sqlite3.connect(target) as conn:
+    # closing() 而不是 `with sqlite3.connect(...)`：后者只提交事务、不关连接
+    with closing(sqlite3.connect(target)) as conn:
         conn.execute("DROP TABLE IF EXISTS attractions")
         conn.executescript(SCHEMA)
         conn.executemany(

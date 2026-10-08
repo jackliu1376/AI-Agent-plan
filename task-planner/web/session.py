@@ -37,6 +37,7 @@ Web 场景和 CLI 有三个根本差异：
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -119,17 +120,67 @@ class Session:
     # 不拦的话会把刚删掉的那一行又写回去。
     dropped: bool = False
 
+    # 驱动它的后台任务是否已经结束。**仅供事件流收尾用**，不落盘。
+    # 被取消的任务不会推出终态事件，没有这个标志流会一直挂着。
+    #
+    # **必须按轮重置**（见 set_status）。它和 _terminal_emitted 是同一类陷阱：
+    # 都是「本轮的运行状态」，但对象活过了多轮。初始运行结束时置了 True，
+    # 修订开始时没清 —— 于是修订刚把 status 翻成 done，
+    # stream_done 就靠这个残留的 True 立刻为真，流提前关闭，
+    # **修订的 plan_ready 永远推不出去**。实测就是这么挂的。
+    driver_done: bool = False
+
+    # **本轮运行**是否已经推出终态事件（见 stream_done）。
+    #
+    # 必须按轮重置，不能只扫 ``events`` —— 上一轮的 plan_ready 还留在
+    # events 里，修订开始时一翻 ``is_finished`` 就会被当成「本轮已结束」，
+    # 于是流立刻关闭，**这一轮的 plan_ready 永远推不出去**，
+    # 客户端只能干等到重连上限。实测就是这么挂的。
+    _terminal_emitted: bool = field(default=False, repr=False)
+
     _condition: asyncio.Condition = field(default_factory=asyncio.Condition, repr=False)
     _answer_future: asyncio.Future[str] | None = field(default=None, repr=False)
     _early_answer: str | None = field(default=None, repr=False)
     # 由 SessionStore 注入：把当前状态写盘。不注入就纯内存运行。
     _on_change: Callable[[], None] | None = field(default=None, repr=False)
 
+    # 串行化「落盘」与「删除」。**这不是可选优化，是正确性要求**：
+    # 落盘走 ``asyncio.to_thread`` 在别的线程里执行，而 ``drop()`` 在事件循环
+    # 线程里执行。没有互斥的话，那个 INSERT 可能在 DELETE 之后落地，
+    # 把刚删掉的行又写回来 —— 用户删了记录又冒出来。
+    #
+    # 用 ``threading`` 而不是 ``asyncio`` 的锁：互斥发生在**跨线程**之间，
+    # asyncio 的锁保护不了工作线程。
+    #
+    # **必须是 ``RLock``。** ``_persist`` 持锁后调 ``_on_change`` →
+    # ``SessionStore._save``，而后者也要拿同一把锁 —— 非重入锁会直接死锁
+    # （实测：整个测试进程挂住直到被 SIGTERM）。
+    _io_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
     # -- 状态 -------------------------------------------------------------
 
     @property
     def is_finished(self) -> bool:
         return self.status in FINISHED_STATUSES
+
+    @property
+    def stream_done(self) -> bool:
+        """事件流是否可以收尾（不会再产出内容）。
+
+        **判据刻意不是 ``is_finished``。** 状态在**落盘之前**就翻成 done
+        （``set_status`` 先改内存再写盘），而驱动层刻意把终态事件扣到落盘
+        之后才推给客户端（见 ``web/app.py::_drive``）—— 若用 ``is_finished``
+        判定，流会在终态事件推出之前关闭，客户端永远收不到 ``plan_ready``。
+
+        两个条件任一成立即可：
+
+        - **本轮终态事件已经推出** —— 正常路径，也是「不会再有内容」的可靠信号；
+        - **驱动任务已结束** —— 兜底。被取消的任务不推终态事件，
+          没有这条兜底流会一直挂着等心跳。
+        """
+        if not self.is_finished:
+            return False
+        return self.driver_done or self._terminal_emitted
 
     @property
     def age_seconds(self) -> float:
@@ -139,23 +190,54 @@ class Session:
         """更新状态并唤醒所有等待中的订阅者。"""
         async with self._condition:
             self.status = status
+            if status == "running":
+                # 新一轮运行开始：清掉**上一轮**的运行标记。
+                #
+                # `driver_done` 与 `_terminal_emitted` 描述的都是「本轮」，
+                # 但 Session 对象活过多轮（初版 + 若干次修订）。
+                # 不清的话 stream_done 会立刻为真 —— 上一轮的值还留着，
+                # 本轮刚把 status 翻成 done 流就关了，终态事件永远推不出去。
+                self.driver_done = False
+                self._terminal_emitted = False
             self.updated_at = time.monotonic()
             self._condition.notify_all()
         # 落盘放在锁外：持锁时做磁盘 I/O 会把所有订阅者一起卡住。
-        self._persist()
+        await self._persist()
 
-    def _persist(self) -> None:
-        """把当前状态同步给持有者。**绝不抛异常**。
+    async def _persist(self) -> None:
+        """异步落盘：把同步的 SQLite 写入挪到线程池。
+
+        ``SessionDB.save()`` 是同步的（JSON 序列化 + INSERT + prune + commit）。
+        直接在事件循环线程上跑，单会话时几毫秒可以忽略，但多会话并发时会累积
+        成可感知的卡顿，还会把 15 秒一次的 SSE 心跳往后推 ——
+        表现就是「进度偶尔一顿一顿的」。
 
         只在状态跃迁时调用（``set_status``），不在每个事件上调用：
         一次运行有 10–30 个事件，每个都写盘是明显的写放大，
         而状态跃迁已经覆盖了所有「崩溃后再看要有意义」的时点。
+
+        **``_io_lock`` 不能省。** 挪到线程池之后，「写」和 ``drop()`` 的「删」
+        会真正并发 —— 不互斥的话 INSERT 可能落在 DELETE 之后，把行写回来。
+        （``dropped`` 检查必须放在**锁内**：放锁外等于没检查。）
+
+        （``SessionStore.create`` 的首次写入走 ``SessionStore._save``，
+        那条路径本来就是同步的、且只写一行小数据，不需要绕线程池。）
         """
-        if self.dropped or self._on_change is None:
+        if self._on_change is None:
             return
+
+        def _write() -> None:
+            with self._io_lock:
+                if self.dropped:
+                    return
+                try:
+                    self._on_change()
+                except Exception:  # noqa: BLE001 - 持久化是旁路
+                    pass
+
         try:
-            self._on_change()
-        except Exception:  # noqa: BLE001 - 持久化是旁路，不能影响主流程
+            await asyncio.to_thread(_write)
+        except Exception:  # noqa: BLE001 - 同上
             pass
 
     # -- 事件 -------------------------------------------------------------
@@ -168,6 +250,10 @@ class Session:
         """
         async with self._condition:
             self.events.append(event.to_dict())
+            if event.type in TERMINAL_EVENT_TYPES:
+                # 记在**本轮**上，供 stream_done 判断（不能去扫整个 events ——
+                # 上一轮的终态事件会被误当成这一轮的）。
+                self._terminal_emitted = True
             self.updated_at = time.monotonic()
             self._condition.notify_all()
 
@@ -179,7 +265,7 @@ class Session:
         """
         while True:
             async with self._condition:
-                if cursor >= len(self.events) and not self.is_finished:
+                if cursor >= len(self.events) and not self.stream_done:
                     # 没有新事件就等一会儿，超时后发心跳
                     try:
                         await asyncio.wait_for(
@@ -189,12 +275,12 @@ class Session:
                         pass
                 batch = self.events[cursor:]
                 cursor = len(self.events)
-                finished = self.is_finished
+                done = self.stream_done
 
             for item in batch:
                 yield item
 
-            if finished and cursor >= len(self.events):
+            if done and cursor >= len(self.events):
                 return
             if not batch:
                 yield None  # 心跳
@@ -363,25 +449,41 @@ class SessionStore:
         return session
 
     def list(self, limit: int = 20) -> list[dict[str, Any]]:
-        """「最近」列表。有磁盘就以磁盘为准（它是全量的）。"""
-        if self._db is not None:
-            return self._db.list(limit)
+        """「最近」列表。有磁盘就以磁盘为准（它是全量的）。
 
-        ordered = sorted(
-            self._sessions.values(), key=lambda s: s.created_wall, reverse=True
-        )
-        size = max(1, limit)
-        return [
-            {
-                "session_id": s.id,
-                "task": s.task,
-                "status": s.status,
-                "created_at": s.created_wall,
-                "updated_at": s.created_wall,
-                "ok": session_ok(s),
-            }
-            for s in ordered[:size]
-        ]
+        **但内存里的状态优先。** 内存是主、磁盘是备份：一条会话刚跑完时，
+        ``set_status("done")`` 的落盘走线程池是**异步**的，而列表读的是磁盘 ——
+        中间那个几毫秒的窗口里，列表会把它显示成 ``running``（侧栏灰点，
+        看起来还在跑）。对持有它的进程来说，内存里的状态永远更新、更准。
+
+        用磁盘提供**全量列表**（含已被 TTL 回收、只存在于磁盘的旧会话），
+        用内存修正**状态字段** —— 两者各取所长。
+        """
+        if self._db is None:
+            ordered = sorted(
+                self._sessions.values(), key=lambda s: s.created_wall, reverse=True
+            )
+            size = max(1, limit)
+            return [
+                {
+                    "session_id": s.id,
+                    "task": s.task,
+                    "status": s.status,
+                    "created_at": s.created_wall,
+                    "updated_at": s.created_wall,
+                    "ok": session_ok(s),
+                }
+                for s in ordered[:size]
+            ]
+
+        rows = self._db.list(limit)
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            live = self._sessions.get(row["session_id"])
+            if live is not None:
+                row = {**row, "status": live.status, "ok": session_ok(live)}
+            out.append(row)
+        return out
 
     def mark_interrupted(self) -> int:
         """启动时把上次遗留的非终态会话标成中断。返回处理条数。"""
@@ -392,12 +494,19 @@ class SessionStore:
     def drop(self, session_id: str) -> bool:
         """彻底删除（内存 + 磁盘）。返回是否真的删掉了什么。"""
         session = self._sessions.pop(session_id, None)
-        if session is not None:
-            # 置位后再取消任务：否则任务收到 CancelledError 后的
-            # set_status("failed") 会把这一行重新写回磁盘。
-            session.dropped = True
 
-        deleted = self._db.delete(session_id) if self._db is not None else False
+        if session is not None:
+            # 置位与删除必须和落盘**互斥**（见 Session._io_lock 的说明）。
+            # 两种顺序都是安全的：
+            #   · 落盘先拿到锁 → 它写完，我们再删 → 干净
+            #   · 我们先拿到锁 → dropped 置位，落盘随后看到就跳过 → 干净
+            # 少了这把锁，就会出现「删了又冒出来」。
+            with session._io_lock:
+                session.dropped = True
+                deleted = self._db.delete(session_id) if self._db is not None else False
+        else:
+            deleted = self._db.delete(session_id) if self._db is not None else False
+
         if session is not None or deleted:
             self._notify_evicted(session_id)
             return True
@@ -406,9 +515,13 @@ class SessionStore:
     # -- 内部 -------------------------------------------------------------
 
     def _save(self, session: Session) -> None:
-        if self._db is None or session.dropped:
+        if self._db is None:
             return
-        self._db.save(session)  # SessionDB.save 自己吞异常
+        # 与 _persist / drop 共用同一把锁，保证「写」和「删」不交叉。
+        with session._io_lock:
+            if session.dropped:
+                return
+            self._db.save(session)  # SessionDB.save 自己吞异常
 
     def _notify_evicted(self, session_id: str) -> None:
         if self._on_evict is not None:
@@ -521,4 +634,9 @@ def _hydrate(record: dict[str, Any]) -> Session:
         error=error,
         clarification=record.get("clarification"),
         revisions=revisions,
+        # 从磁盘恢复的会话没有驱动任务，stream_done 只能靠这个标记收尾。
+        # 上面已经保证终态会话一定带一条终态事件，所以直接按它置位。
+        _terminal_emitted=any(
+            e.get("type") in TERMINAL_EVENT_TYPES for e in events
+        ),
     )

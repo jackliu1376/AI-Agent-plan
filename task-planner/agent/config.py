@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -32,31 +33,57 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip() or default
 
 
+def _warn_fallback(name: str, raw: str, default: object, why: str) -> None:
+    """配置非法时**明确告警**，而不是静默回落。
+
+    静默回落比想象中危险：用户写了 ``MAX_TURNS=-1``，程序照常启动、
+    用默认值 8 跑得好好的 —— 他以为自己配的 -1 生效了（或以为配置没被读到），
+    直到某天发现行为不对才回头查。一行 stderr 就能省掉这次排查。
+
+    写 stderr 而不是 stdout：stdout 在 CLI 里要留给计划正文。
+    """
+    print(
+        f"⚠️  配置 {name}={raw!r} 非法（{why}），已回落到 {default!r}。",
+        file=sys.stderr,
+    )
+
+
 def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
-    """读整数环境变量。非法值（非数字 / 低于下限）回落到默认值。
+    """读整数环境变量。非法值（非数字 / 低于下限）回落到默认值**并告警**。
 
     早期版本只 catch ``ValueError``，导致 ``MAX_TURNS=-1`` 这类配置错误
     被静默接受 —— 编排循环会一轮都不跑，直接返回「未产出计划」，
-    用户完全看不出是配置写错了。
+    用户完全看不出是配置写错了。现在两件事都做：回落 + 告警。
     """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
     try:
-        value = int(_env(name, str(default)))
+        value = int(raw.strip())
     except ValueError:
+        _warn_fallback(name, raw, default, "不是整数")
         return default
     if minimum is not None and value < minimum:
+        _warn_fallback(name, raw, default, f"低于下限 {minimum}")
         return default
     return value
 
 
 def _env_float(name: str, default: float, *, minimum: float | None = None,
                maximum: float | None = None) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
     try:
-        value = float(_env(name, str(default)))
+        value = float(raw.strip())
     except ValueError:
+        _warn_fallback(name, raw, default, "不是数字")
         return default
     if minimum is not None and value < minimum:
+        _warn_fallback(name, raw, default, f"低于下限 {minimum}")
         return default
     if maximum is not None and value > maximum:
+        _warn_fallback(name, raw, default, f"超过上限 {maximum}")
         return default
     return value
 
@@ -91,6 +118,11 @@ class Settings:
     llm_timeout: int = 60
     llm_max_retries: int = 2
     temperature: float = 0.2
+    # 服务商私有参数的透传通道（JSON 字符串）。OpenAI 协议里没有这些，
+    # 但不少服务商有额外开关，最典型的是关掉思考模式提速：
+    #   LLM_EXTRA_BODY='{"thinking":{"type":"disabled"}}'
+    # 做成透传而不是硬编码，是为了不把某一家的参数写进通用代码。
+    extra_body: str = ""
 
     @property
     def has_credentials(self) -> bool:
@@ -136,6 +168,7 @@ class Settings:
             llm_timeout=_env_int("LLM_TIMEOUT", 60, minimum=5),
             llm_max_retries=_env_int("LLM_MAX_RETRIES", 2, minimum=0),
             temperature=_env_float("LLM_TEMPERATURE", 0.2, minimum=0.0, maximum=2.0),
+            extra_body=_env("LLM_EXTRA_BODY"),
         )
 
     def system_prompt(self, today: date | None = None) -> str:

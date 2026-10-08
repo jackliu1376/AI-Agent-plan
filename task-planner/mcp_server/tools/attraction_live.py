@@ -53,7 +53,7 @@ from pydantic import BaseModel, Field, field_validator
 from common.envelope import ERR_NOT_FOUND, ERR_UPSTREAM_ERROR, ToolResult
 from mcp_server.data.cities import lookup_city
 from mcp_server.tools.base import env, register, tool_timeout
-from mcp_server.tools.route import AMAP_KEY_ENV, AMAP_QUOTA_INFOCODE
+from mcp_server.tools.route import AMAP_KEY_ENV, AMAP_QUOTA_INFOCODE, amap_covers
 
 AMAP_POI_URL = "https://restapi.amap.com/v5/place/text"
 
@@ -328,6 +328,24 @@ def query_attraction_realtime(params: AttractionLiveParams) -> ToolResult:
         return ToolResult.failure(
             ERR_NOT_FOUND,
             f"无法解析城市「{params.city}」。本工具只覆盖中国境内城市。",
+        )
+
+    # **调用前判掉境外。** 不判的话高德会静默降级成全国模糊搜索，
+    # 返回一堆同名但不同城的 POI（查「大英博物馆」返回遂宁市的
+    # 「大英汉陶博物馆」、查「伦敦塔桥」返回北京世界公园的微缩景观），
+    # 白烧一次配额，最后抛一句让人摸不着头脑的「城市不符」。
+    if not amap_covers(city):
+        return ToolResult.failure(
+            ERR_NOT_FOUND,
+            f"本工具（高德实时 POI）只覆盖中国大陆与港澳，"
+            f"「{city.name_zh}」位于{city.country}，不在覆盖范围内。\n"
+            "**这是覆盖范围问题，不是这个景点不存在**，不要据此判断景点信息。\n"
+            "请改用：\n"
+            "1. `query_attractions_db` —— 本地景点库（含 305 个城市，"
+            "境外热门城市如东京 / 巴黎 / 伦敦 / 纽约 / 新加坡 / 曼谷 / 首尔都在其中）；\n"
+            "2. `fetch_webpage` 抓取该景点的官网或官方页面；\n"
+            "3. 都拿不到时，在计划里标注「⚠️ 开放时间与票价需自行核实」。",
+            tool="query_attraction_realtime",
         )
 
     payload, error = _fetch_poi(params)

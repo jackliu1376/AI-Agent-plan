@@ -18,6 +18,12 @@ ERR_NOT_FOUND = "NOT_FOUND"
 ERR_FORBIDDEN_PATH = "FORBIDDEN_PATH"
 ERR_FILE_ERROR = "FILE_ERROR"
 ERR_UNEXPECTED = "UNEXPECTED"
+# 参数本身合法，但**取值超出了数据源能覆盖的范围** —— 典型是「查 40 天后的
+# 天气」：日期格式没问题，只是预报只有约 16 天。
+# 和 BAD_ARGS 分开是有必要的：BAD_ARGS 的潜台词是「你传错了」，
+# 模型看到会去改格式、重试同一个日期；而这个码的潜台词是
+# 「这个日期问不出结果，换成区间内的日期，或者改用气候经验值」。
+ERR_OUT_OF_RANGE = "OUT_OF_RANGE"
 # 编排循环专用：工具预算耗尽（不是工具本身的问题，但同样要记进 trace）
 ERR_BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
 

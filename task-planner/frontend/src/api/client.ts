@@ -167,7 +167,10 @@ export function openEventStream(
 
   const close = () => {
     closed = true
-    if (retryTimer !== null) clearTimeout(retryTimer)
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer)
+      retryTimer = null
+    }
     source?.close()
     source = null
   }
@@ -194,9 +197,31 @@ export function openEventStream(
     source.onerror = () => {
       // 流被服务端正常关闭（任务结束）时会走到这里。
       // 已到终态或主动关闭就不管；否则按退避重连并带上游标续传。
+      //
+      // readyState 必须在 close() **之前**读 —— close() 会把它置成 CLOSED，
+      // 之后就分辨不出「浏览器判定为永久失败」和「我们自己关的」了。
+      const readyState = source?.readyState
       source?.close()
       source = null
+
       if (closed) return
+
+      // 防重入：同一次失败可能触发多次 onerror。不拦的话，
+      // 第二个定时器会覆盖第一个的引用 —— 第一个再也清不掉（泄漏），
+      // 而且会并发开出两条连接。
+      if (retryTimer !== null) return
+
+      // CLOSED 表示浏览器判定为**致命错误**（非 2xx 状态码 / Content-Type 不符），
+      // 它自己不会重连。最常见的原因是会话已被删除（404）。
+      // 这时重试 5 次只会让用户白等 20 多秒才看到提示。
+      // （措辞刻意留了余地：服务重启等场景也会走到这里。）
+      if (readyState === EventSource.CLOSED) {
+        handlers.onTransportError?.(
+          '无法继续接收进度（会话可能已被删除或服务已重启），请刷新页面。',
+        )
+        close()
+        return
+      }
 
       if (reconnects >= MAX_RECONNECTS) {
         handlers.onTransportError?.('与服务端的连接中断，请刷新页面重试。')
@@ -204,7 +229,12 @@ export function openEventStream(
         return
       }
       reconnects += 1
-      retryTimer = setTimeout(connect, RECONNECT_DELAY_MS * reconnects)
+      retryTimer = setTimeout(() => {
+        // 必须清空引用：否则下一次 onerror 的防重入守卫会把自己挡住，
+        // 表现就是「重连了一次就再也不重连」。
+        retryTimer = null
+        connect()
+      }, RECONNECT_DELAY_MS * reconnects)
     }
   }
 

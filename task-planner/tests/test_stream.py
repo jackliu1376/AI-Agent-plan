@@ -107,6 +107,42 @@ async def test_failed_tool_still_emits_result_event(
     assert result.data["attempts"] == 2
 
 
+async def test_tool_result_carries_error_message(
+    settings: Settings, broken_weather, runner
+) -> None:
+    """失败事件必须带上**错误原文**，不能只给错误码。
+
+    前端原来只拿得到 `error_code`，于是把后端的详细说明压成「参数不合法」
+    这种四字标签 —— 用户看到「查天气参数不合法」完全不知道哪里不对，
+    而后端其实写了「预报只覆盖到 10-23，请改用区间内的日期」这种可执行的话。
+    """
+    orch = Orchestrator(
+        ScriptedLLM(
+            [tool_turn(("c1", "get_weather_forecast", WEATHER_ARGS)), plan_turn(make_plan())]
+        ),
+        runner,
+        settings,
+    )
+    events = await _collect(orch, "成都 2 日游")
+
+    result = next(e for e in events if e.type == "tool_result")
+    message = result.data["error_message"]
+    assert message, "失败事件没带 error_message，前端只能显示错误码标签"
+    assert len(message) > 10, f"错误原文太短，不像是给人看的：{message!r}"
+
+
+async def test_successful_tool_result_has_no_error_message(
+    settings: Settings, fake_weather, runner
+) -> None:
+    """成功的调用不该带 error_message（前端据此判断走哪条渲染分支）。"""
+    orch = Orchestrator(_simple_script(), runner, settings)
+    events = await _collect(orch, "成都 2 日游")
+
+    result = next(e for e in events if e.type == "tool_result")
+    assert result.data["ok"] is True
+    assert result.data["error_message"] is None
+
+
 # ---------------------------------------------------------------------------
 # JSON 可序列化 —— Web 层的前提
 # ---------------------------------------------------------------------------

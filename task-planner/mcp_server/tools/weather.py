@@ -26,7 +26,13 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
-from common.envelope import ERR_BAD_ARGS, ERR_NOT_FOUND, ERR_UPSTREAM_ERROR, ToolResult
+from common.envelope import (
+    ERR_NOT_FOUND,
+    ERR_OUT_OF_RANGE,
+    ERR_UPSTREAM_ERROR,
+    ERR_UPSTREAM_TIMEOUT,
+    ToolResult,
+)
 from mcp_server.data.cities import index_size, lookup_city
 from mcp_server.tools.base import register, tool_timeout
 
@@ -86,6 +92,27 @@ def _fetch_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
         return resp.json()
 
 
+def _upstream_failure(what: str, exc: httpx.HTTPError) -> ToolResult:
+    """把 httpx 网络异常映射成**可重试**的错误信封。
+
+    为什么要单独抽出来：``httpx.TimeoutException`` 继承自 ``httpx.HTTPError``
+    而**不是**内置 ``TimeoutError``，所以只写 ``except httpx.HTTPStatusError``
+    是抓不到超时和连接失败的 —— 它们会一路冒泡到 ``base.invoke()`` 被归类为
+    ``UNEXPECTED``。行为上虽然也会重试，但错误码说不清原因，
+    而且**本来写好的降级路径永远走不到**。
+
+    超时与其它网络故障分开：两者都可重试，但 ``UPSTREAM_TIMEOUT``
+    能让排查的人一眼看出是网络慢而不是上游挂了。
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return ToolResult.failure(
+            ERR_UPSTREAM_TIMEOUT, f"{what}请求超时（{type(exc).__name__}）：{exc}"
+        )
+    return ToolResult.failure(
+        ERR_UPSTREAM_ERROR, f"{what}请求失败（{type(exc).__name__}）：{exc}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 城市解析
 # ---------------------------------------------------------------------------
@@ -118,6 +145,12 @@ def resolve_city(query: str) -> tuple[ResolvedCity | None, str]:
     """解析城市。返回 (结果, 错误信息)。
 
     顺序：策展表 → GeoNames 生成索引 → Open-Meteo 地理编码（带置信度标记）。
+
+    **网络异常会向上抛**（``httpx.HTTPError``），不在这里吞掉 ——
+    因为「城市不存在」和「地理编码服务不可用」是两回事：
+    前者该返回 NOT_FOUND（不重试），后者该返回 UPSTREAM_*（可重试）。
+    混在一起会让一次网络抖动被报成「查无此城」，用户与模型都会被带偏。
+    调用方（``get_weather_forecast``）负责接住并区分。
     """
     # 1) 本地解析（策展表 + 生成索引，共 1.4 万+ 城市）
     local = lookup_city(query)
@@ -250,8 +283,14 @@ def summarize_weather(data: dict[str, Any]) -> str:
     summarize=summarize_weather,
 )
 def get_weather_forecast(params: WeatherParams) -> ToolResult:
-    # 1) 解析城市
-    city, error = resolve_city(params.city)
+    # 1) 解析城市。
+    #    本地库（1.4 万+ 城市）命中时零网络；只有未命中才会去打地理编码 API。
+    #    因此这里的网络异常只可能来自兜底通道 —— 不能让它变成「查无此城」。
+    try:
+        city, error = resolve_city(params.city)
+    except httpx.HTTPError as exc:
+        return _upstream_failure("城市解析（在线地理编码）", exc)
+
     if city is None:
         return ToolResult.failure(ERR_NOT_FOUND, error)
 
@@ -282,7 +321,7 @@ def get_weather_forecast(params: WeatherParams) -> ToolResult:
         match = ALLOWED_RANGE_RE.search(reason)
         if match:
             return ToolResult.failure(
-                ERR_BAD_ARGS,
+                ERR_OUT_OF_RANGE,
                 f"请求的日期超出预报范围：{params.start_date} ~ {params.end_date}。"
                 f"Open-Meteo 当前只提供 {match.group(1)} ~ {match.group(2)} 的预报，"
                 "请改用该区间内的日期；更远的日期只能给出气候意义上的经验判断，"
@@ -293,12 +332,18 @@ def get_weather_forecast(params: WeatherParams) -> ToolResult:
             f"预报接口返回 {exc.response.status_code}"
             + (f"：{reason}" if reason else ""),
         )
+    except httpx.HTTPError as exc:
+        # 超时 / 连接失败 / DNS 失败。注意要放在 HTTPStatusError **之后** ——
+        # 后者是前者的子类，顺序反了会把状态码错误也吞进这个分支。
+        return _upstream_failure("天气预报接口", exc)
 
     daily = forecast.get("daily") or {}
     dates = daily.get("time") or []
     if not dates:
+        # 同上面那个分支：日期格式没问题，只是查不到 —— 用 OUT_OF_RANGE 而不是
+        # NOT_FOUND，后者会让模型以为「这个城市没有天气数据」而去换城市。
         return ToolResult.failure(
-            ERR_NOT_FOUND,
+            ERR_OUT_OF_RANGE,
             f"该日期区间无预报（Open-Meteo 通常只提供未来约 16 天）: "
             f"{params.start_date} ~ {params.end_date}",
         )

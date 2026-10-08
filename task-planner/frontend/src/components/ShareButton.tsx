@@ -38,6 +38,28 @@ function ShareIcon() {
   )
 }
 
+/** 下拉箭头。这个按钮点开是有菜单的，加个箭头提示 —— 否则用户不知道能点。 */
+function CaretIcon() {
+  return (
+    <svg
+      className="share-caret"
+      width="9"
+      height="9"
+      viewBox="0 0 10 10"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M2.5 4L5 6.5 7.5 4"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 function CopyIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -82,6 +104,14 @@ export function ShareButton({ plan, model }: Props) {
   const holderRef = useRef<HTMLDivElement | null>(null)
   const buttonRef = useRef<HTMLButtonElement | null>(null)
 
+  // 打开后把焦点移到第一项。
+  // 不这么做的话焦点留在触发按钮上，键盘用户按 ↓ 毫无反应 ——
+  // role="menu" 只是给屏幕阅读器贴了标签，实际进不去。
+  useEffect(() => {
+    if (!open) return
+    holderRef.current?.querySelector<HTMLButtonElement>('.share-item')?.focus()
+  }, [open])
+
   // 点外面 / Esc 关闭
   useEffect(() => {
     if (!open) return
@@ -101,6 +131,31 @@ export function ShareButton({ plan, model }: Props) {
       document.removeEventListener('keydown', onKey)
     }
   }, [open])
+
+  /** ↑↓ 在菜单项间循环；Home / End 跳首尾。挂在容器上，触发按钮也能用。 */
+  const onMenuKeyDown = (event: React.KeyboardEvent) => {
+    const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End']
+    if (!keys.includes(event.key)) return
+    event.preventDefault()
+    const items = Array.from(
+      holderRef.current?.querySelectorAll<HTMLButtonElement>('.share-item') ?? [],
+    )
+    if (items.length === 0) return
+
+    if (event.key === 'Home') {
+      items[0]?.focus()
+      return
+    }
+    if (event.key === 'End') {
+      items[items.length - 1]?.focus()
+      return
+    }
+
+    const current = items.indexOf(document.activeElement as HTMLButtonElement)
+    const step = event.key === 'ArrowDown' ? 1 : -1
+    const next = current === -1 ? (step === 1 ? 0 : items.length - 1) : current + step
+    items[(next + items.length) % items.length]?.focus()
+  }
 
   // 提示 3 秒后自动消失
   useEffect(() => {
@@ -148,7 +203,7 @@ export function ShareButton({ plan, model }: Props) {
     )
 
   return (
-    <div className="share" ref={holderRef}>
+    <div className="share" ref={holderRef} onKeyDown={onMenuKeyDown}>
       <button
         ref={buttonRef}
         type="button"
@@ -161,6 +216,7 @@ export function ShareButton({ plan, model }: Props) {
       >
         <ShareIcon />
         <span>{busy ? '生成中…' : '分享'}</span>
+        <CaretIcon />
       </button>
 
       {open && (

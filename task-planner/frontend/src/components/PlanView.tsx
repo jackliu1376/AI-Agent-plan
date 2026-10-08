@@ -6,7 +6,7 @@
  * 用户不该为了看懂依赖去回滚查找 S2 是什么。
  */
 
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import type { Plan, Step } from '../api/types'
 import { humanizeSource } from '../lib/toolLabels'
 
@@ -71,7 +71,17 @@ interface Props {
   onJumpToComposer?: () => void
 }
 
-export function PlanView({
+/**
+ * 计划正文。
+ *
+ * **`memo` 是必要的，不是为了好看。** 修订期间每个事件都会让 App 重渲染，
+ * 而这份计划的 DOM 相当大（阶段 / 步骤 / 依赖 / 来源标注）——
+ * 每次事件都重建一遍，用户看到的就是「进度条一顿一顿地走」。
+ *
+ * props 里的 `onJumpToComposer` 在 App 侧是 `useCallback(..., [])`，
+ * 引用稳定，所以 memo 能真正生效（传内联箭头函数的话它每次都失效）。
+ */
+const PlanViewBase = memo(function PlanView({
   plan,
   markdown,
   stepCount,
@@ -203,4 +213,6 @@ export function PlanView({
       </div>
     </>
   )
-}
+})
+
+export const PlanView = PlanViewBase

@@ -387,7 +387,12 @@ def test_tool_returns_warning_on_medium_confidence(monkeypatch: pytest.MonkeyPat
 
 
 def test_tool_rejects_city_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """实测反例回归：查巴黎的景点却返回广州的结果，必须失败而不是给错数据。"""
+    """实测反例回归：查一个城市的景点却返回另一个城市的结果，必须失败而不是给错数据。
+
+    **注意查询城市必须是覆盖范围内的。** 用「巴黎」的话会在发起请求**之前**
+    就被 `amap_covers` 拦下（见 test_tool_rejects_overseas_before_calling），
+    走不到 `pick_best_match` 的城市校验 —— 这条测试就失去意义了。
+    """
     import mcp_server.tools.attraction_live as mod
 
     monkeypatch.setenv("AMAP_API_KEY", "k")
@@ -397,12 +402,88 @@ def test_tool_rejects_city_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = invoke(
         "query_attraction_realtime",
-        {"name": "蒙马特高地与圣心大教堂", "city": "巴黎"},
+        {"name": "蒙马特高地与圣心大教堂", "city": "成都"},
     )
 
     assert not result.ok
     assert "城市不符" in result.error.message
     assert "query_attractions_db" in result.error.message, "要给出降级建议"
+
+
+# ---------------------------------------------------------------------------
+# 覆盖范围：境外必须**在发起请求之前**就判掉
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "city"),
+    [
+        ("大英博物馆", "伦敦"),
+        ("埃菲尔铁塔", "巴黎"),
+        ("自由女神像", "纽约"),
+        ("台北101", "台北"),  # 实测高德对台湾也返回空，别想当然算进覆盖范围
+    ],
+)
+def test_tool_rejects_overseas_before_calling(
+    monkeypatch: pytest.MonkeyPatch, name: str, city: str
+) -> None:
+    """境外城市要在**调用之前**判掉，不能靠解析返回值来发现。
+
+    回归用：曾经只有「城市能否解析」这一道检查，而伦敦 / 巴黎都能解析
+    （在 1.4 万城市索引里），于是照样去查高德 ——
+    高德对不认识的 `region` **不报错，而是静默降级成全国关键词模糊搜索**：
+
+    · 查「大英博物馆」→ 遂宁市大英县的「大英汉陶博物馆」
+    · 查「伦敦塔桥」→ 北京世界公园里的微缩景观
+
+    结果是白烧一次配额，最后抛一句让人摸不着头脑的「城市不符」。
+    """
+    import mcp_server.tools.attraction_live as mod
+
+    monkeypatch.setenv("AMAP_API_KEY", "k")
+
+    def _explode(**kw: object) -> object:
+        raise AssertionError("境外城市不该发起请求 —— 配额有限，且结果必然是错的")
+
+    monkeypatch.setattr(mod.httpx, "Client", _explode)
+
+    result = invoke("query_attraction_realtime", {"name": name, "city": city})
+
+    assert not result.ok
+    assert result.error.code == ERR_NOT_FOUND
+    assert "覆盖" in result.error.message
+    # 必须说清「这不是景点不存在」，否则模型会据此下错误结论
+    assert "不是这个景点不存在" in result.error.message
+    assert "query_attractions_db" in result.error.message, "要给出可用的替代方案"
+
+
+@pytest.mark.parametrize("city", ["成都", "香港", "澳门"])
+def test_amap_covers_domestic_and_hk_mo(city: str) -> None:
+    """港澳必须算在覆盖范围内 —— 实测高德对它们有数据（香港 86 条、澳门 96 条）。
+
+    把港澳误判成境外会白白丢掉本来能拿到的实时数据。
+    """
+    from mcp_server.data.cities import lookup_city
+    from mcp_server.tools.route import amap_covers
+
+    info = lookup_city(city)
+    assert info is not None, city
+    assert amap_covers(info), f"{city}（{info.country}）不该被拦"
+
+
+@pytest.mark.parametrize("city", ["伦敦", "巴黎", "纽约", "台北"])
+def test_amap_does_not_cover_overseas(city: str) -> None:
+    """境外（含台湾）不在覆盖范围内。
+
+    **台湾特别容易想当然**：实测 `台北101` 高德返回空，
+    所以 `中国台湾` 不能算进覆盖范围。
+    """
+    from mcp_server.data.cities import lookup_city
+    from mcp_server.tools.route import amap_covers
+
+    info = lookup_city(city)
+    assert info is not None, city
+    assert not amap_covers(info), f"{city}（{info.country}）应该被拦"
 
 
 def test_tool_rejects_garbage_query(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
 from common.envelope import ERR_NOT_FOUND, ToolResult
-from mcp_server.data.cities import CURATED, index_size, lookup_city
+from mcp_server.data.cities import CURATED, City, index_size, lookup_city
 from mcp_server.tools.base import env, register, tool_timeout
 
 # 城市坐标来自 mcp_server/data/cities.py（与天气工具共用同一份事实来源）
@@ -111,6 +112,16 @@ MODE_PROFILE: dict[str, tuple[float, float, float, float]] = {
     "flight": (1.15, 750.0, 2.5, 0.75),
 }
 
+# 走**标定分档**的高铁。普速（train）不在其中 —— 它没有逐线标定，
+# 走 MODE_PROFILE 的线性模型（120km/h、¥0.20/km）。
+#
+# 曾经写成 RAIL_MODES = {"hsr", "train"} 并让两者都进 _estimate_rail()，
+# 结果是 MODE_PROFILE["train"] 成了死代码：普速按高铁参数算出来
+# 时间少一半、价格高一倍，而 mode_label 还写着「普速列车」——
+# 双重误导。实测上海→成都：修前 8.9h/¥854，修后 17.7h/¥405。
+HSR_MODES = {"hsr"}
+
+# 铁路类交通（高铁 + 普速）：估算路径不同，但**核实渠道都是 12306**。
 RAIL_MODES = {"hsr", "train"}
 
 
@@ -141,6 +152,38 @@ def pick_rail_band(straight_km: float) -> RailBand:
 AMAP_KEY_ENV = "AMAP_API_KEY"
 AMAP_DRIVING_URL = "https://restapi.amap.com/v3/direction/driving"
 AMAP_QUOTA_INFOCODE = "10023"
+
+# 高德只覆盖中国大陆 + 港澳。**调用前必须先判掉境外，否则它会静默给出错误结果。**
+#
+# 实测（2026-10-08，同一把 key）：
+#
+# | 查询 | 结果 |
+# |---|---|
+# | 东方明珠 @ 上海 | ✅ 正确 |
+# | 维多利亚港 @ 香港 | ✅ 正确（86 条） |
+# | 大三巴牌坊 @ 澳门 | ✅ 正确（96 条） |
+# | 台北101 @ 台北 | ❌ 无结果 |
+# | 大英博物馆 @ 伦敦 | ❌ **返回遂宁市的「大英汉陶博物馆」** |
+# | 埃菲尔铁塔 @ 巴黎 | ❌ 无结果 |
+#
+# 危险的是第三行那类：`region` 传一个高德不认识的行政区（伦敦）时，
+# 它**不报错，而是静默降级成全国关键词模糊搜索** ——
+# 「大英博物馆」于是命中了遂宁市大英县的「大英汉陶博物馆」，
+# 「伦敦塔桥」命中了北京世界公园里的微缩景观。
+# 换乘接口那边则直接抛 `INSUFFICIENT_ABROAD_PRIVILEGES`（境外服务需单独申请权限）。
+#
+# 注意**台湾不在其中**：实测 `台北101` 返回空。别想当然把它算进来。
+AMAP_COVERED_COUNTRIES: frozenset[str] = frozenset({"中国", "中国香港", "中国澳门"})
+
+
+def amap_covers(city: City) -> bool:
+    """这个城市是否在高德的服务范围内。
+
+    供工具在**发起请求之前**判掉境外 —— 省一次配额，而且能给出准确的失败原因
+    （现在会写成「可能两地之间没有公共交通方案」，把用户往完全错的方向带）。
+    """
+    return city.country in AMAP_COVERED_COUNTRIES
+
 
 # 自驾成本 = 过路费 + 油费。
 #
@@ -289,7 +332,9 @@ def haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
     lat2, lon2 = map(math.radians, b)
     dlat, dlon = lat2 - lat1, lon2 - lon1
     h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(h))
+    # clamp 到 [0,1]：对跖点附近浮点误差会让 h 略大于 1，
+    # 而 math.asin(>1) 抛 ValueError。城市级距离几乎不会触发，但这是纯防御成本。
+    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(min(1.0, max(0.0, h))))
 
 
 def _estimate_rail(straight: float) -> dict[str, object]:
@@ -354,7 +399,9 @@ def _estimate_other(straight: float, mode: str) -> dict[str, object]:
 
 MODE_NAMES_ZH = {
     "hsr": "高铁",
-    "train": "火车",
+    # 与 estimate_route 里的 mode_label 保持一致 —— 同一份返回里
+    # 摘要说「火车」、note 说「普速列车」会让人以为是两种东西。
+    "train": "普速列车",
     "flight": "飞机",
     "drive": "自驾",
     "bus": "大巴",
@@ -448,10 +495,15 @@ def estimate_route(params: RouteParams) -> ToolResult:
     degraded = ""
     source = "offline:city-coords"
 
-    if params.mode in RAIL_MODES:
+    if params.mode in HSR_MODES:
         estimate = _estimate_rail(straight)
-        mode_label = "高铁" if params.mode == "hsr" else "普速列车"
+        mode_label = "高铁"
         accuracy = "车程 ±20%、费用 ±15%（基于 2026-10 真实线路标定）"
+    elif params.mode == "train":
+        # 普速没有逐线标定，用 MODE_PROFILE 的线性模型（见 HSR_MODES 的说明）
+        estimate = _estimate_other(straight, params.mode)
+        mode_label = "普速列车"
+        accuracy = "量级参考（普速车次速度差异大，未逐线标定）"
     elif params.mode == "drive":
         live, live_error = amap_driving(
             (origin.lon, origin.lat), (destination.lon, destination.lat)

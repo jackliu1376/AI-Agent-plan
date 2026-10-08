@@ -57,7 +57,12 @@ def build_server() -> Server:
         # 延迟导入，避免在模块导入阶段就拉起网络依赖
         from mcp_server.tools.base import invoke
 
-        result = invoke(params.name, dict(params.arguments or {}))
+        # invoke() 是**同步**的：天气 / 网页抓取会阻塞 1–2 秒，重试时还会 sleep。
+        # 直接调用会把整个 MCP Server 的事件循环卡住 —— 无法并发处理调用，
+        # 超时期间服务完全无响应。放进线程池，与 LocalToolRunner.call() 保持一致。
+        result = await asyncio.to_thread(
+            invoke, params.name, dict(params.arguments or {})
+        )
         payload = json.dumps(result.to_payload(), ensure_ascii=False, default=str)
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=payload)],
@@ -67,9 +72,12 @@ def build_server() -> Server:
     return Server(
         SERVER_NAME,
         version=SERVER_VERSION,
+        # 工具数从注册表动态取 —— 写死数字必然随工具增删而过期
+        # （这里曾经写着「共 8 个工具」，实际已是 10 个，而且这段文字会进 LLM 上下文）。
         instructions=(
             "任务规划助手工具集。提供天气查询、网页抓取、本地景点库查询、"
-            "预算 CSV 解析、汇率换算、城际交通估算、计划落盘与用户澄清共 8 个工具。"
+            "预算 CSV 解析、汇率换算、城际交通估算、计划落盘与用户澄清"
+            f"共 {len(registry)} 个工具。"
         ),
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,

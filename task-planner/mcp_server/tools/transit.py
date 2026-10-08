@@ -42,7 +42,7 @@ from pydantic import BaseModel, Field, field_validator
 from common.envelope import ERR_BAD_ARGS, ERR_NOT_FOUND, ERR_UPSTREAM_ERROR, ToolResult
 from mcp_server.data.cities import lookup_city
 from mcp_server.tools.base import env, register, tool_timeout
-from mcp_server.tools.route import AMAP_KEY_ENV, AMAP_QUOTA_INFOCODE
+from mcp_server.tools.route import AMAP_KEY_ENV, AMAP_QUOTA_INFOCODE, amap_covers
 
 AMAP_TRANSIT_URL = "https://restapi.amap.com/v3/direction/transit/integrated"
 
@@ -427,6 +427,24 @@ def query_transit_options(params: TransitParams) -> ToolResult:
 
     assert origin is not None and destination is not None
 
+    # **调用前判掉境外。** 不判的话高德会返回 `INSUFFICIENT_ABROAD_PRIVILEGES`
+    # （境外服务需单独申请权限），而旧代码把它包成一句
+    # 「可能两地之间没有公共交通方案」—— 把用户往完全错的方向带：
+    # 上海→伦敦当然没有铁路方案，但原因不是「没有」，是「查不了」。
+    outside = [c for c in (origin, destination) if not amap_covers(c)]
+    if outside:
+        names = "、".join(f"{c.name_zh}（{c.country}）" for c in outside)
+        return ToolResult.failure(
+            ERR_NOT_FOUND,
+            f"本工具（高德换乘规划）只覆盖中国大陆与港澳，"
+            f"而 {names} 不在覆盖范围内。\n"
+            "**这是覆盖范围问题，不是「两地之间没有交通」** —— "
+            "不要据此告诉用户「没有可用的交通方式」。\n"
+            "请改用 `estimate_route`：它按直线距离与分档参数做量级估算，"
+            "**支持国际航线**（如 上海 → 伦敦 飞机会给出 14h / ¥7900 量级）。",
+            tool="query_transit_options",
+        )
+
     payload, error = _fetch_transit(params, origin, destination)
     if payload is None:
         # 不重试：配额有限，重试只会更快烧完
@@ -437,7 +455,7 @@ def query_transit_options(params: TransitParams) -> ToolResult:
         return ToolResult.failure(
             ERR_UPSTREAM_ERROR,
             f"高德未返回可用的换乘方案（{origin.name_zh} → {destination.name_zh}）。"
-            "可能两地之间没有公共交通方案，或该路线不在高德覆盖范围内。"
+            "可能两地之间确实没有公共交通方案（如小城市之间的短途）。"
             "请改用 estimate_route 做量级估算，或如实告知用户。",
             tool="query_transit_options",
         )

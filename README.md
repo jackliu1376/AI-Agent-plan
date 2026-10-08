@@ -1,17 +1,21 @@
 # Cairn · 任务规划助手
 
-> 把一句"我想周末去成都玩两天"变成一份**有序、可执行、带依赖关系**的行动计划。
+> 把一句"我想周末去成都玩两天"变成一份**有序、可执行、带依赖关系**的行动计划。>   
 > 一个基于 **MCP 协议**的工具调用 Agent，会自己查天气、翻景点库、算交通，缺数据时如实说而不是编。
 
-**Cairn** /kern/ —— 徒步时用石头堆起的路标。名字取自它和这个项目的三处同构：
-**一块一块垒起来**（每个事实都经工具查证后才写进计划）、
-**只用手里真有的石头**（查不到就说查不到，绝不编造）、
+**Cairn** <u>kern</u> —— 徒步时用石头堆起的路标。名字取自它和这个项目的三处同构：  
+**一块一块垒起来**（每个事实都经工具查证后才写进计划）、  
+**只用手里真有的石头**（查不到就说查不到，绝不编造）、  
 立在**不熟悉的地形**里（任务越模糊，越要先澄清再规划）。
 
-![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-585%20passed-2ea44f)
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python\&logoColor=white)
+
+![Tests](https://img.shields.io/badge/tests-675%20passed-2ea44f)
+
 ![License](https://img.shields.io/badge/license-MIT-blue)
+
 ![Protocol](https://img.shields.io/badge/protocol-MCP-6E56CF)
+
 ![LLM](https://img.shields.io/badge/LLM-DeepSeek-4D6BFE)
 
 ---
@@ -35,15 +39,15 @@
 
 ### 网页版
 
-<table>
-<tr>
+<table>  
+<tr>  
 <td width="50%">
 
 **① 输入需求**
 
 ![输入界面](docs/screenshots/01-input.png)
 
-</td>
+</td>  
 <td width="50%">
 
 **② 实时进度**
@@ -52,9 +56,9 @@
 
 ![实时进度](docs/screenshots/02-progress.png)
 
-</td>
-</tr>
-<tr>
+</td>  
+</tr>  
+<tr>  
 <td width="50%">
 
 **③ 结构化计划**
@@ -63,7 +67,7 @@
 
 ![计划视图](docs/screenshots/03-plan.png)
 
-</td>
+</td>  
 <td width="50%">
 
 **④ 澄清提问**
@@ -72,8 +76,8 @@
 
 ![澄清卡片](docs/screenshots/04-clarification.png)
 
-</td>
-</tr>
+</td>  
+</tr>  
 </table>
 
 ### 命令行
@@ -117,8 +121,8 @@ $ uv run task-planner "我想周末去成都玩两天，带小孩，人均预算
   ✅ query_attractions_db 31ms
 ```
 
-注意它做的几件事：把"周末"**自己推算**成 `2026-10-03/04`（没反问用户）、
-**真实调用**天气接口、发现两天降水概率都超 50% 后**主动切换室内方案**、
+注意它做的几件事：把"周末"**自己推算**成 `2026-10-03/04`（没反问用户）、  
+**真实调用**天气接口、发现两天降水概率都超 50% 后**主动切换室内方案**、  
 并且每个含事实的步骤都标了 `data_source`。
 
 ### 缺数据时它会说实话
@@ -133,27 +137,27 @@ $ uv run task-planner "帮我规划这周末去雷克雅未克玩三天"
 计划中涉及具体景点的部分需你自行核实或改用官方渠道查询。
 ```
 
-工具失败不会中断流程，Agent 继续用其他工具完成计划，并明确标注缺口——
+工具失败不会中断流程，Agent 继续用其他工具完成计划，并明确标注缺口——  
 **不编造景点、票价或坐标**。
 
 ---
 
 ## 核心特性
 
-- **8 个功能互异的工具** —— 天气 API、网页抓取、SQLite 查询、CSV 解析、汇率换算、
-  路径估算、文件落盘、用户澄清
-- **MCP 协议桥接** —— 工具以标准 MCP Server（stdio / JSON-RPC）暴露，
+- **10 个功能互异的工具** —— 天气 API、网页抓取、SQLite 景点库、CSV 解析、汇率换算、    
+  城际交通估算、实时公交换乘、实时景点核对、文件落盘、用户澄清
+- **MCP 协议桥接** —— 工具以标准 MCP Server（stdio / JSON-RPC）暴露，    
   同时保留 LLM 原生 function calling 作为降级通道
-- **单一 Schema 来源** —— 工具的 Pydantic 模型同时生成 MCP `inputSchema` 与
+- **单一 Schema 来源** —— 工具的 Pydantic 模型同时生成 MCP `inputSchema` 与    
   LLM `tools` 参数，有测试断言两者逐字节一致
-- **6 条运行时护栏** —— 轮次上限、工具预算、幂等去重、失败重试+降级、
+- **6 条运行时护栏** —— 轮次上限、工具预算、幂等去重、失败重试+降级、    
   提示注入隔离、输出校验+修复重试
-- **14,359 个中文城市名解析** —— 本地索引优先，覆盖 229 个国家/地区，中英文名与
+- **14,359 个中文城市名解析** —— 本地索引优先，覆盖 229 个国家/地区，中英文名与    
   繁体输入都能命中
 - **305 个城市 / 6103 条景点** —— 中国 255 城（覆盖全部 34 个省级行政区）
-  + 海外 50 城，含币种字段（USD/JPY/EUR/HKD/TWD…）与**来源分层标注**
-  （`manual` 人工核对 / `amap` 高德实抓 / `wikidata` Wikidata 实抓）
-- **193 个测试，100% 通过** —— 含 21 个"曾经解析错城市"的回归用例
+  - 海外 50 城，含币种字段（USD/JPY/EUR/HKD/TWD…）与**来源分层标注**      
+    （`manual` 人工核对 / `amap` 高德实抓 / `wikidata` Wikidata 实抓）
+- **675 个测试，100% 通过** —— 含 21 个"曾经解析错城市"的回归用例
 
 ---
 
@@ -179,7 +183,7 @@ uv run task-planner "我想周末去成都玩两天，带小孩，人均预算 1
 uv run pytest
 ```
 
-> `--demo` 模式用一个脚本化 LLM 按剧本返回，**工具是真实执行的**。
+> `--demo` 模式用一个脚本化 LLM 按剧本返回，**工具是真实执行的**。>   
 > 因此没有 API Key 也能完整演示「模型决策 → 工具调用 → 结果回灌 → 产出计划」这条链路。
 
 ### 网页版
@@ -199,14 +203,14 @@ npm run dev:all              # 一条命令拉起后端 + 前端，Ctrl+C 一起
                              # → http://localhost:5173
 ```
 
-`dev:all` 会先把后端拉起来、等它就绪，再启动 Vite —— 这样首屏不会全是代理错误。
+`dev:all` 会先把后端拉起来、等它就绪，再启动 Vite —— 这样首屏不会全是代理错误。  
 输出带 `[api]` / `[web]` 前缀，方便区分是哪个进程在说话。
 
 **它会做三件「开两个终端」做不到的事**：
 
-1. **启动前清理残留进程** —— 上次没退干净的 `task-planner-web.exe` 会让这次启动
+1. **启动前清理残留进程** —— 上次没退干净的 `task-planner-web.exe` 会让这次启动     
    「看起来成功了」，实际是旧进程在服务，你改半天代码发现没生效。
-2. **停止时杀整棵进程树**（Windows 用 `taskkill /F /T`）—— `uv run` 会派生子进程，
+2. **停止时杀整棵进程树**（Windows 用 `taskkill /F /T`）—— `uv run` 会派生子进程，     
    朴素的 `child.kill()` 只杀得掉 wrapper，会留下占着端口和文件句柄的孤儿进程。
 3. **端口占用时明确警告**，而不是让你对着一个连到旧进程的页面调试。
 
@@ -221,12 +225,12 @@ npm run dev                  # 只跑前端（5173，代理 /api → 8000）
 
 **启动失败？** 两个最常见的原因：
 
-| 现象 | 原因 | 处理 |
-|---|---|---|
-| `UnicodeEncodeError: 'gbk' codec can't encode ...` | Windows 控制台是 GBK，输出里的 emoji 编码不了 | 已在 `common/console.py` 统一兜底（降级成 `?` 而不是崩溃）。若仍遇到，说明有新入口没接上 |
-| `os error 32` / 端口被占 | 上次没退干净的孤儿进程 | `npm run dev:all` 启动时会自动清理；手动的话按 PID 精确杀，**不要** `taskkill /IM node.exe`（会误伤编辑器等其它 node 进程） |
+| 现象                                                 | 原因                               | 处理                                                                                         |
+| -------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------ |
+| `UnicodeEncodeError: 'gbk' codec can't encode ...` | Windows 控制台是 GBK，输出里的 emoji 编码不了 | 已在 `common/console.py` 统一兜底（降级成 `?` 而不是崩溃）。若仍遇到，说明有新入口没接上                                  |
+| `os error 32` / 端口被占                               | 上次没退干净的孤儿进程                      | `npm run dev:all` 启动时会自动清理；手动的话按 PID 精确杀，**不要** `taskkill /IM node.exe`（会误伤编辑器等其它 node 进程） |
 
-改完前端执行 `npm run build`，产物直接输出到 `web/static/`，
+改完前端执行 `npm run build`，产物直接输出到 `web/static/`，  
 FastAPI 会自动托管，生产环境只需一个进程。
 
 ### 其他命令
@@ -242,7 +246,7 @@ uv run python -m mcp_server.server --list           # 打印 MCP 暴露的 Schem
 
 ## 事件流接口
 
-编排循环的核心入口是 **`Orchestrator.run_stream()`** —— 一个异步生成器，
+编排循环的核心入口是 **`Orchestrator.run_stream()`** —— 一个异步生成器，  
 把整个规划过程拆成事件逐个产出：
 
 ```python
@@ -250,30 +254,30 @@ async for event in orch.run_stream("我想周末去成都玩两天"):
     print(event.type, event.data)      # 可直接 SSE 推给前端
 ```
 
-| 事件 | 时机 | 关键字段 |
-|---|---|---|
-| `run_started` | 开始 | `max_turns` `tool_budget` |
-| `turn_started` | 每轮模型调用 | `turn` `max_turns` |
-| `tool_call` | 模型请求调工具 | `tool` `args` |
-| `tool_result` | 工具返回 | **`summary`** `ok` `error_code` `latency_ms` `budget_used` |
-| `clarification` | **需要用户补充信息** | `question` `options` `reason` |
-| `repair` | 输出不合规触发重试 | `reason` |
-| `plan_ready` | 产出最终计划 | `plan` `markdown` `trace` |
+| 事件              | 时机           | 关键字段                                                       |
+| --------------- | ------------ | ---------------------------------------------------------- |
+| `run_started`   | 开始           | `max_turns` `tool_budget`                                  |
+| `turn_started`  | 每轮模型调用       | `turn` `max_turns`                                         |
+| `tool_call`     | 模型请求调工具      | `tool` `args`                                              |
+| `tool_result`   | 工具返回         | **`summary`** `ok` `error_code` `latency_ms` `budget_used` |
+| `clarification` | **需要用户补充信息** | `question` `options` `reason`                              |
+| `repair`        | 输出不合规触发重试    | `reason`                                                   |
+| `plan_ready`    | 产出最终计划       | `plan` `markdown` `trace`                                  |
 
-> **`summary` 是人话摘要**，由每个工具自己生成（`ToolSpec.summarize`）——
-> 只有工具知道返回数据里哪些字段是重点。前端用它把「已查证」列表
-> 渲染成 `天气 10-10 起 2 天，小毛毛雨，18–25°C`，
-> 而不是 `get_weather_forecast 1464ms · 预算 1/12`。
+> **`summary` 是人话摘要**，由每个工具自己生成（`ToolSpec.summarize`）——>   
+> 只有工具知道返回数据里哪些字段是重点。前端用它把「已查证」列表>   
+> 渲染成 `天气 10-10 起 2 天，小毛毛雨，18–25°C`，>   
+> 而不是 `get_weather_forecast 1464ms · 预算 1/12`。>   
 > 摘要**绝不抛异常**：它只是展示层的东西，不能把一次成功的调用变成失败。
 
 三个约定：
 
-1. **`event.data` 全部 JSON 可序列化** —— SSE 可以原样推给前端，不需要为每种事件写转换。
+1. **`event.data` 全部 JSON 可序列化** —— SSE 可以原样推给前端，不需要为每种事件写转换。     
    有测试逐事件断言这一点。
-2. **澄清是「暂停 → 提问 → 恢复」**，不是中断。`ask_user` 回调同步（CLI 的 `input()`）
+2. **澄清是「暂停 → 提问 → 恢复」**，不是中断。`ask_user` 回调同步（CLI 的 `input()`）     
    或异步（Web 层挂起等待前端回填）都支持。
-3. **`run()` / `run_async()` 只是事件流的消费者**，对外行为与改造前完全一致 ——
-   重构时 193 个既有测试**一行没改**就全绿。
+3. **`run()` / `run_async()` 只是事件流的消费者**，对外行为与改造前完全一致 ——     
+   重构时既有测试**一行没改**就全绿。
 
 CLI 里可以直接看到效果：
 
@@ -301,22 +305,22 @@ uv run task-planner-web            # → http://127.0.0.1:8000
 
 ### 路由
 
-| 方法 | 路径 | 作用 |
-|---|---|---|
-| `GET` | `/api/health` | 健康检查 |
-| `GET` | `/api/tools` | 工具清单（含 JSON Schema，前端可渲染表单） |
-| `POST` | `/api/sessions` | 提交任务，返回 `session_id` |
-| `GET` | `/api/sessions` | **「最近」列表**（`?limit=N`），侧栏数据源 |
-| `GET` | `/api/sessions/{id}` | 查询状态 / 结果（刷新页面后恢复用） |
-| `GET` | `/api/sessions/{id}/events` | **SSE 事件流**，支持 `?cursor=N` 续传 |
-| `POST` | `/api/sessions/{id}/answers` | 提交澄清答案 |
-| `POST` | `/api/sessions/{id}/revisions` | **按反馈增量修订**，返回事件续传游标 |
-| `GET` | `/api/sessions/{id}/revisions/{seq}` | 取某一版计划的完整内容 |
-| `DELETE` | `/api/sessions/{id}` | 删除会话（内存 + 磁盘） |
+| 方法       | 路径                                   | 作用                            |
+| -------- | ------------------------------------ | ----------------------------- |
+| `GET`    | `/api/health`                        | 健康检查                          |
+| `GET`    | `/api/tools`                         | 工具清单（含 JSON Schema，前端可渲染表单）   |
+| `POST`   | `/api/sessions`                      | 提交任务，返回 `session_id`          |
+| `GET`    | `/api/sessions`                      | **「最近」列表**（`?limit=N`），侧栏数据源  |
+| `GET`    | `/api/sessions/{id}`                 | 查询状态 / 结果（刷新页面后恢复用）           |
+| `GET`    | `/api/sessions/{id}/events`          | **SSE 事件流**，支持 `?cursor=N` 续传 |
+| `POST`   | `/api/sessions/{id}/answers`         | 提交澄清答案                        |
+| `POST`   | `/api/sessions/{id}/revisions`       | **按反馈增量修订**，返回事件续传游标          |
+| `GET`    | `/api/sessions/{id}/revisions/{seq}` | 取某一版计划的完整内容                   |
+| `DELETE` | `/api/sessions/{id}`                 | 删除会话（内存 + 磁盘）                 |
 
 ### 为什么拆成两个请求？
 
-`EventSource` 有两个硬限制：**只能发 GET**、**不能带自定义请求头**。
+`EventSource` 有两个硬限制：**只能发 GET**、**不能带自定义请求头**。  
 所以任务参数不能塞进流式请求里，必须「先 POST 建会话，再 GET 订阅」：
 
 ```console
@@ -336,12 +340,12 @@ data: {"type":"tool_result","data":{"tool":"get_weather_forecast","ok":true,"lat
 data: {"type":"plan_ready","data":{"ok":true,"step_count":14,...}}
 ```
 
-事件统一走默认的 `message` 事件（不设 `event:` 字段），前端一个 handler 按
+事件统一走默认的 `message` 事件（不设 `event:` 字段），前端一个 handler 按  
 `data.type` 分派即可。空闲时服务端每 15 秒发一行 `: ping` 注释保活。
 
 ### 澄清是「暂停」，不是中断
 
-服务端协程挂在一个 `Future` 上，会话状态变为 `awaiting_input`；
+服务端协程挂在一个 `Future` 上，会话状态变为 `awaiting_input`；  
 前端弹窗提问，用户回答后 `POST /answers` 唤醒它继续跑：
 
 ```
@@ -355,7 +359,7 @@ POST /api/sessions/{id}/answers  {"answer":"成都，10月3-4日"}
 
 会话在**状态跃迁时**落盘到 `logs/sessions.db`（SQLite，标准库，无新依赖）。
 
-为什么需要它：原来的会话只活在内存里（TTL 30 分钟 + 上限 200 个）。
+为什么需要它：原来的会话只活在内存里（TTL 30 分钟 + 上限 200 个）。  
 而前端把「最近」列表存在 `localStorage` —— 于是形成一个很难察觉的割裂：
 
 ```
@@ -363,31 +367,32 @@ POST /api/sessions/{id}/answers  {"answer":"成都，10月3-4日"}
 重启服务 / 过 TTL → 点进去说「已过期」（内存里没了）
 ```
 
-用户看到一份「看起来还在、点开却没有」的历史。现在列表改由
+用户看到一份「看起来还在、点开却没有」的历史。现在列表改由  
 `GET /api/sessions` 提供，而每一条都对应磁盘上一行真实存在的记录。
 
-| 设计点 | 做法 | 理由 |
-|---|---|---|
-| **写入时机** | 只在 `running / awaiting_input / done / failed` 四个跃迁点写 | 一次运行有 10–30 个事件，逐个写盘是明显的写放大 |
-| **内存 vs 磁盘** | 内存是主，磁盘是后备；内存未命中就回磁盘捞 | 事件推送要快，历史查询要全 |
-| **TTL 回收** | **只清内存，不删盘** | 「暂时没人看」和「用户不要了」是两回事 |
-| **`DELETE`** | 内存 + 磁盘一起删（硬删除） | 用户明确说不要了 |
-| **容量** | 磁盘最多 500 条，按创建时间淘汰最旧的 | 和 `runs.jsonl` 同一条原则：不能无限长 |
-| **中断标记** | 启动时把上次遗留的 `running` 标成 `interrupted` | 否则「最近」里会出现永远转圈的僵尸记录 |
-| **终止事件** | 恢复非正常结束的会话时补一条 `error` 事件 | 前端靠它判断「可以收尾」，缺了会一直重连到上限 |
-| **失败容忍** | 所有落盘方法**绝不抛异常**，只返回 `False` / 空 | 持久化是旁路，磁盘满了不该让正在跑的规划崩掉 |
+| 设计点          | 做法                                                   | 理由                          |
+| ------------ | ---------------------------------------------------- | --------------------------- |
+| **写入时机**     | 只在 `running / awaiting_input / done / failed` 四个跃迁点写 | 一次运行有 10–30 个事件，逐个写盘是明显的写放大 |
+| **内存 vs 磁盘** | 内存是主，磁盘是后备；内存未命中就回磁盘捞                                | 事件推送要快，历史查询要全               |
+| **TTL 回收**   | **只清内存，不删盘**                                         | 「暂时没人看」和「用户不要了」是两回事         |
+| **`DELETE`** | 内存 + 磁盘一起删（硬删除）                                      | 用户明确说不要了                    |
+| **容量**       | 磁盘最多 500 条，按创建时间淘汰最旧的                                | 和 `runs.jsonl` 同一条原则：不能无限长  |
+| **中断标记**     | 启动时把上次遗留的 `running` 标成 `interrupted`                 | 否则「最近」里会出现永远转圈的僵尸记录         |
+| **终止事件**     | 恢复非正常结束的会话时补一条 `error` 事件                            | 前端靠它判断「可以收尾」，缺了会一直重连到上限     |
+| **失败容忍**     | 所有落盘方法**绝不抛异常**，只返回 `False` / 空                      | 持久化是旁路，磁盘满了不该让正在跑的规划崩掉      |
 
-`interrupted` 是一个独立状态，不是 `failed` 的一种 —— 它要说的是
-「服务重启打断了这次运行」，和「模型没产出合规计划」是两码事，
+`interrupted` 是一个独立状态，不是 `failed` 的一种 —— 它要说的是  
+「服务重启打断了这次运行」，和「模型没产出合规计划」是两码事，  
 前端圆点与提示文案也不同。
 
 `SESSION_DB_ENABLED=0` 可整体关掉，行为退回纯内存。
 
 ### 增量修订：改，而不是重写
 
-计划是**起点**不是交付物。一份 17 步 / 13 周的计划必然要调，而原来的产品逻辑
-只有「不满意就丢掉重来」—— 重新提一个任务，所有工具重调一遍、整份计划重新推导，
+计划是**起点**不是交付物。一份 17 步 / 13 周的计划必然要调，而原来的产品逻辑  
+只有「不满意就丢掉重来」—— 重新提一个任务，所有工具重调一遍、整份计划重新推导，  
 连用户满意的那 80% 也可能被改掉。
+
 
 `POST /api/sessions/{id}/revisions` 把上一版计划连同用户反馈一起回灌：
 
@@ -489,6 +494,7 @@ frontend/src/
 ├─ public/travel.jpg        拼贴里的照片卡（生成后压到 480×720 / 91 KB）
 ├─ lib/
 │  ├─ toolLabels.ts         工具名 → 人话
+│  ├─ formatTime.ts         相对时间格式化（侧栏与页头共用）
 │  └─ shareImage.ts         计划 → 分享图（Canvas 手绘，零依赖）
 └─ App.tsx
 ```
@@ -505,6 +511,7 @@ frontend/src/
 | 配色切换 | 侧栏底部的分段控件，`localStorage` 持久化 | 用户两套都喜欢。放侧栏而不是光区里 —— 光区一旦有了计划就够不着了 |
 | 配色作用域 | **只作用于光区** | 外面那些彩色是**语义色**（绿=完成 / 玫瑰=要注意 / 琥珀=进行中），不能跟着主题变，否则「一色一义」这条约定就废了 |
 | 退场动画 | 分两拍：先原地淡出（布局不动），420ms 后再从 DOM 摘掉 | 只淡出不动布局 → 摘掉时内容会「跳」上来几百像素，比硬切还难看；同时收高度 → 内容在半透明状态下往上抽，很脏 |
+| 侧栏选中态 | 左侧括号弧线（椭圆圆角 `border`）+ 双行信息 | 直线只是分隔线，弧线才有「把这条包起来」的意味。折叠态隐藏弧线——36px 宽里会压在首字方块上 |
 | 缩放适配 | 宽度用 CSS 断点（`--fit-w`），**高度由 JS 实测**（`--fit-h`） | 只按宽度缩的话，系统缩放到 125%（视口逻辑高度变小）会把首页顶出一条纵向滚动条。高度必须用 JS —— CSS 的 `calc` 做不到「长度 ÷ 长度」得到无单位数字，而 `calc(660px * var(--fit))` 要求 `--fit` 是数字（实测各种写法都返回 0px） |
 
 **两条踩过的坑，都写进代码注释了**：
@@ -707,7 +714,7 @@ pywebview 的窗口循环必须占用主线程，所以 uvicorn 只能放线程�
 
 | 层 | 数据源 | 规模 |
 |---|---|---|
-| 1 | 策展表 `cities.py`（人工维护） | 170 条 |
+| 1 | 策展表 `cities.py`（人工维护） | 250 条 |
 | 2 | 生成索引 `city_index.tsv`（GeoNames） | **14,359** 个中文城市名 / 229 个国家 |
 | 3 | Open-Meteo 地理编码（兜底，带 `confidence` 标记） | — |
 
@@ -715,7 +722,8 @@ pywebview 的窗口循环必须占用主线程，所以 uvicorn 只能放线程�
 `維也納`→维也纳 · `new york`/`NEW YORK`/`newyork`→纽约 · `NYC`→纽约 ·
 `三藩市`→旧金山 · `乔治市`→槟城
 
-### 景点库（305 城市 / 6103 条）
+
+### 景点库（305 城市 / 6,103 条）
 
 **中国 255 个目的地**：4 直辖市 + 2 特别行政区 + 台湾 5 城 + 27 省会/首府，
 其余按「旅游热度 + 地级市规模」补足，覆盖每个省级行政区；
@@ -773,8 +781,10 @@ AI-Agent/
 ├─ README.md                      ← 你正在看的这份
 ├─ LICENSE                        ← MIT + GeoNames 署名
 ├─ docs/
-│  ├─ task-planning-assistant-plan.md   项目计划书（计划清单/规则/系统提示词/测试用例）
-│  └─ task-planner-test-report.md       评测报告（315 用例 + 缺陷修复记录）
+│  ├─ task-planning-assistant-plan.md   项目计划书（范围 / 规则 / 技术栈 / 系统提示词）
+│  ├─ task-planner-test-report.md       评测报告（缺陷修复记录 + 温度对照实验）
+│  ├─ task-planner-review.md            代码评审与复盘（问题清单 + 迭代路线）
+│  └─ screenshots/                      截图与设计稿
 └─ task-planner/                  ← 项目代码
    ├─ agent/
    │  ├─ loop.py                  编排循环 + 全部护栏（核心）
@@ -793,18 +803,19 @@ AI-Agent/
    │  └─ samples.yaml             评测样本集（24 条 / 7 类）
    ├─ mcp_server/
    │  ├─ server.py                MCP Server（stdio，mcp 2.x API）
-   │  ├─ tools/                   8 个工具 + base.py（注册表与调用框架）
+   │  ├─ tools/                   10 个工具 + base.py（注册表与调用框架）
    │  └─ data/
-   │     ├─ cities.py             策展城市表（251 条，含 55 个景区级目的地）
+   │     ├─ cities.py             策展城市表（250 条，含 55 个景区级目的地）
    │     ├─ city_index.tsv        生成的城市索引（14,359 条，900 KB）
    │     ├─ build_city_index.py   从 GeoNames 重建索引
    │     ├─ countries.py          国家代码 → 中文名（229 条）
    │     ├─ city_targets.py       抓取目标城市名单（255 中国 + 50 海外）
-   │     ├─ seed.py               景点数据：手写 282 条 + 兜底 64 条 + 加载逻辑
-   │     ├─ seed_generated.py     抓取的 5757 条（机器生成，勿手改）
+   │     ├─ seed.py               景点数据：人工核对 346 条 + 加载/兜底逻辑
+   │     ├─ seed_generated.py     抓取生成的 5,757 条（高德 + Wikidata，勿手改）
    │     └─ attractions.db        建库产物（gitignore，首次访问自动重建）
    ├─ scripts/
-   │  └─ build_attractions.py     抓取脚本：高德（中国）+ Wikidata（海外）
+   │  ├─ build_attractions.py     抓取脚本：高德（中国）+ Wikidata（海外）
+   │  └─ eval_model.py            跨模型评测封装（切模型 / 关思考 / A-B 对比）
    ├─ web/
    │  ├─ app.py                   FastAPI 路由 + SSE + 限流
    │  ├─ session.py               会话状态、事件重放、澄清挂起/唤醒
@@ -817,13 +828,15 @@ AI-Agent/
    │  └─ src/
    │     ├─ api/                  类型契约 + HTTP/SSE 客户端
    │     ├─ lib/toolLabels.ts     工具名 → 人话（已查证列表 + 步骤出处）
-   │     ├─ lib/shareImage.ts      计划 → 分享图（Canvas 两遍绘制）
+   │     ├─ lib/shareImage.ts     计划 → 分享图（Canvas 两遍绘制）
+   │     ├─ lib/formatTime.ts     相对时间格式化（侧栏与页头共用）
    │     ├─ hooks/                会话状态机、后端健康检查
-   │     └─ components/           侧栏 / 输入 / 已查证 / 澄清 / 计划
+   │     └─ components/           侧栏 / 输入 / 已查证 / 澄清 / 计划 / 分享
    ├─ scripts/dev.mjs             一条命令拉起后端+前端（含进程树清理）
    ├─ start-dev.bat               Windows 双击启动开发环境
+   ├─ start-desktop.bat           Windows 双击启动桌面版
    ├─ common/envelope.py          统一返回信封
-   ├─ tests/                      652 个用例
+   ├─ tests/                      675 个用例
    ├─ logs/                       运行记录 + 会话库（不进版本库）
    └─ outputs/                    计划落盘沙箱
 ```
@@ -842,6 +855,7 @@ AI-Agent/
 | `LLM_TIMEOUT` | `60` | 单次 LLM 调用超时（秒） |
 | `LLM_MAX_RETRIES` | `2` | LLM 调用失败重试次数 |
 | `LLM_TEMPERATURE` | `0.2` | 采样温度（0–2） |
+| `LLM_EXTRA_BODY` | — | 透传服务商私有参数（JSON 字符串）。如关掉 MiMo 的思考模式：`'{"thinking":{"type":"disabled"}}'` |
 | `MAX_TURNS` | `8` | 编排循环最大轮次 |
 | `TOOL_BUDGET` | `12` | 单次会话工具调用总预算 |
 | `TOOL_TIMEOUT` | `10` | 单次工具超时（秒） |
@@ -851,31 +865,55 @@ AI-Agent/
 | `ALLOW_PRIVATE_URLS` | — | 设为 `1` 允许 `fetch_webpage` 访问内网地址。**仅限本地开发/测试，生产环境不要开** |
 | `AMAP_API_KEY` | — | 高德 Web 服务 Key。配置后驾车模式走实时路线（配额 10000 次/月）。留空则离线估算 |
 
+### 换模型
+
+客户端用的是**标准 OpenAI SDK**（`OpenAI(base_url=...)` + `tools` / `tool_choice="auto"`），
+没有任何 DeepSeek 私有特性 —— 任何「OpenAI 兼容 + 支持 function calling」的服务都能直接换，
+**代码一行都不用动**：
+
+| 服务商 | `DEEPSEEK_BASE_URL` | `DEEPSEEK_MODEL` |
+|---|---|---|
+| DeepSeek | `https://api.deepseek.com` | `deepseek-chat` |
+| 小米 MiMo | `https://api.xiaomimimo.com/v1` | `mimo-v2.6-pro` |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.3` |
+
+> 变量名叫 `DEEPSEEK_*` 只是历史原因，与功能无关。
+
+**换之前先跑评测对比** —— 不同模型的工具调用能力与 schema 遵循度差别很大，
+尤其「注入抵抗」那一类完全靠模型自身、编排层兜不住：
+
+```bash
+uv run python scripts/eval_model.py --list                     # 模型清单与 Key 状态
+uv run python scripts/eval_model.py mimo --dry-run             # 只校验样本，不调 API
+uv run python scripts/eval_model.py mimo --category 注入抵抗 --repeat 3
+uv run python scripts/eval_model.py --compare deepseek-chat mimo-v2.6-pro
+```
+
 ---
 
 ## 测试
 
 ```bash
-uv run pytest          # 652 passed
+uv run pytest          # 675 passed
 uv run pytest -v       # 查看每个用例名
 ```
 
 | 测试文件 | 用例数 | 覆盖内容 |
 |---|---|---|
 | `test_cities.py` | 118 | 城市解析三层策略、景点库覆盖（含**别名查询**）、**21 个错误解析回归用例** |
-| `test_tools.py` | 79 | 10 个工具的行为、错误码、沙箱、重试、幂等 + **交通估算精度回归** |
+| `test_tools.py` | 84 | 10 个工具的行为、错误码、沙箱、重试、幂等 + **交通估算精度回归** |
 | `test_eval_runner.py` | 65 | **评测判定逻辑本身**：样本校验、关键词匹配、假失败防护 |
 | `test_run_log.py` | 59 | **运行记录：绝不抛异常、坏行容错、轮转、统计口径** |
 | `test_fixes.py` | 55 | **代码评审发现的缺陷回归** + 数据时效、核实渠道、**来源分层标注** |
-| `test_transit.py` | 47 | **高德公交换乘解析**：跨天时刻、缺失字段、仓位价格、错误路径 |
-| `test_attraction_live.py` | 46 | **高德 POI 匹配校验**：城市冲突、**坐标复核（救回被误杀的县级市）**、名称相似度 |
-| `test_session_db.py` | 32 | **会话持久化**：落盘/恢复、回收不删盘、中断标记、删除不复活、坏盘不崩 |
+| `test_transit.py` | 50 | **高德公交换乘解析**：跨天时刻、缺失字段、仓位价格、错误路径、**境外覆盖范围拦截** |
+| `test_attraction_live.py` | 57 | **高德 POI 匹配校验**：城市冲突、**坐标复核（救回被误杀的县级市）**、名称相似度、**境外覆盖范围拦截** |
+| `test_session_db.py` | 34 | **会话持久化**：落盘/恢复、回收不删盘、中断标记、删除不复活、坏盘不崩、**并发落盘全成功** |
 | `test_revision.py` | 27 | **增量修订**：上一版真的回灌、护栏没被绕过、版本链落盘、老库加列不丢数据 |
 | `test_loop.py` | 27 | 编排循环 + 全部护栏 |
 | `test_web.py` | 27 | HTTP 路由、**SSE 重放/续传**、澄清跨请求、会话回收、运行记录、**未知 api 路径返回 404 而非 405** |
 | `test_summaries.py` | 23 | **工具人话摘要**：绝不抛异常、措辞、事件真的带上摘要 |
 | `test_config.py` | 18 | base_url 校验、日期注入、**密钥泄漏扫描** |
-| `test_stream.py` | 16 | 事件流序列、**JSON 可序列化**、澄清挂起与恢复 |
+| `test_stream.py` | 18 | 事件流序列、**失败事件带错误原文**、JSON 可序列化、澄清挂起与恢复 |
 | `test_console.py` | 9 | **控制台编码兜底**：GBK 下 emoji 不再让服务崩掉 |
 | `test_mcp_bridge.py` | 4 | MCP 协议桥接（真实拉起子进程） |
 
@@ -901,6 +939,15 @@ uv run pytest -v       # 查看每个用例名
 `{ok, data, error, meta}` 让错误码可以被程序判定，从而区分「值得重试」
 （`UPSTREAM_TIMEOUT`）和「重试也没用」（`BAD_ARGS`）。这是重试逻辑成立的前提。
 
+错误码还**给模型指路**。同样不可重试，`BAD_ARGS` 和 `OUT_OF_RANGE` 的下一步不同：
+前者说「你传错了」（改格式、重试），后者说「这个取值问不出结果，换一个」
+（如查 40 天后的天气 → 改用区间内的日期，或改用气候经验值并标注为非实时预报）。
+把后者混进 `BAD_ARGS`，模型会去反复重试同一个日期。
+
+失败事件里还带 `error_message`（错误原文）。只给错误码的话，前端只能显示
+「参数不合法」这种四字标签 —— 而后端其实写了「预报只覆盖到 10-23」这种
+可执行的话。丢掉它，用户就得不到「为什么」的答案。
+
 **3. 为什么要有工具预算和幂等去重？**
 模型会重复请求同一个调用。没有去重会浪费预算，没有预算上限会陷入循环烧 token。
 命中缓存的调用不消耗预算，实测中一次 5 调用的任务里省下了 2 次。
@@ -919,7 +966,7 @@ LLM 不知道"今天"是哪天。不注入的话，用户说"周末去成都"，
 可以实时显示"正在查天气…""已找到 10 个景点…"。
 
 关键是**改法**：让 `run()` / `run_async()` 变成事件流的消费者，而不是重写一份逻辑。
-这样对外行为完全不变——重构时 193 个既有测试一行没改就全绿，这是判断改造是否安全的
+这样对外行为完全不变——重构时既有测试一行没改就全绿，这是判断改造是否安全的
 最好信号。另外硬性要求 `event.data` 必须 JSON 可序列化，SSE 才能原样转发。
 
 ---
@@ -1026,6 +1073,7 @@ uv run task-planner-eval --repeat 2 \
 ```
 
 输出（每个样本下并排给出两臂，跑完直接附对比表）：
+
 
 ```
 🧪 评测样本集：evals/samples.yaml
@@ -1406,6 +1454,7 @@ SampleError: must_not_mention 的关键词「没有任何限制」出现在任�
 3. **不要编造距离或票价** —— 缺数据就标注「⚠️ 数据缺失」。
 ```
 
+
 并新增样本 `boundary-05-scenic-spot-destination` 锁住这个行为。
 
 > 这正是样本集的价值：**它发现的第一个真问题，是我自己没想到的。**
@@ -1645,9 +1694,9 @@ G33   北京 19:00 → 上海     23:35        4.6h   ¥578   ← 实际二等�
 
 | `source` | 条数 | 怎么来的 | 引用口径 |
 |---|---|---|---|
-| `manual` | 338 | 人工逐条核对 | 可直接引用 |
-| `amap` | 3761 | 高德 POI 实抓（名称/类型/评分/开放时间真实） | 票价须加「约」 |
-| `wikidata` | 954 | Wikidata 实抓（名称/类型真实） | 票价与评分都要说明是估算 |
+| `manual` | 346 | 人工逐条核对 | 可直接引用 |
+| `amap` | 4811 | 高德 POI 实抓（名称/类型/评分/开放时间真实） | 票价须加「约」 |
+| `wikidata` | 946 | Wikidata 实抓（名称/类型真实） | 票价与评分都要说明是估算 |
 
 `source` 会随每条记录返回给模型，工具描述里也写明了三档的引用口径。
 `FRESHNESS_DISCLAIMER` 同步说明了「库内数据来源不一」。
@@ -1733,14 +1782,17 @@ Wikidata 无此属性。所以维持「如实标注演示数据 + 给官方查�
 
 ## 关于 AI 生成代码
 
-本项目是 Experiment 1「Bring Your Own Agent」的作业，要求用 AI 生成样板代码。
-为便于审阅，标注各部分来源：
+本项目的**样板代码由 AI 生成、再逐文件人工复核**；核心逻辑（系统提示词、编排循环、
+评测集、会话持久化）由人工编写。为便于审阅，标注各部分来源：
 
 | 类别 | 文件 |
 |---|---|
-| ✍️ **人工编写** | `agent/prompts/system.md`（系统提示词）<br>`agent/loop.py`（编排循环与全部护栏）<br>`agent/events.py`（事件流设计）<br>`agent/run_log.py`、`agent/run_report.py`、`agent/eval_runner.py`（评测基建）<br>`evals/samples.yaml`（评测样本集）<br>`web/session.py`（会话与澄清挂起机制）、`web/session_db.py`（会话落盘与中断恢复）<br>`tests/`（测试用例来自需求设计）<br>`mcp_server/data/seed.py`（景点数据：手写 + 兜底 + 加载逻辑）<br>`mcp_server/data/city_targets.py`（抓取目标名单）<br>`mcp_server/data/cities.py`（策展城市表） |
-| 🕸️ **抓取生成** | `mcp_server/data/seed_generated.py`（5757 条景点，由 `scripts/build_attractions.py` 从高德与 Wikidata 抓取） |
-| 🤖 AI 生成后人工复核 | `mcp_server/tools/*.py`（8 个工具）<br>`mcp_server/server.py`、`agent/llm_client.py`<br>`agent/tool_runner.py`、`agent/schema.py`<br>`agent/cli.py`、`agent/config.py`、`agent/demo.py`<br>`mcp_server/data/build_city_index.py`<br>`web/app.py`、`web/serve.py`<br>`frontend/`（React 组件、状态机、样式） |
+| ✍️ **人工编写** | `agent/prompts/system.md`（系统提示词）<br>`agent/loop.py`（编排循环与全部护栏）<br>`agent/events.py`（事件流设计）<br>`agent/run_log.py`、`agent/run_report.py`、`agent/eval_runner.py`（评测基建）<br>`evals/samples.yaml`（评测样本集）<br>`web/session.py`（会话与澄清挂起机制）、`web/session_db.py`（会话落盘与中断恢复）<br>`tests/`（测试用例来自需求设计）<br>`mcp_server/data/seed.py`（景点数据：人工核对 + 加载/兜底逻辑）<br>`mcp_server/data/city_targets.py`（抓取目标名单）<br>`mcp_server/data/cities.py`（策展城市表） |
+| 🕸️ **抓取生成** | `mcp_server/data/seed_generated.py`（5,757 条景点，由 `scripts/build_attractions.py` 从高德与 Wikidata 抓取） |
+| 🤖 **AI 生成后人工复核** | `mcp_server/tools/*.py`（10 个工具）<br>`mcp_server/server.py`、`agent/llm_client.py`<br>`agent/tool_runner.py`、`agent/schema.py`<br>`agent/cli.py`、`agent/config.py`、`agent/demo.py`<br>`scripts/eval_model.py`（跨模型评测封装）<br>`mcp_server/data/build_city_index.py`<br>`web/app.py`、`web/serve.py`<br>`frontend/`（React 组件、状态机、样式） |
+
+> AI 生成的样板都经过人工逐文件阅读与修改后才提交；评审过程中发现并修复的问题
+> 记录在 [`docs/task-planner-review.md`](docs/task-planner-review.md)。
 
 ---
 

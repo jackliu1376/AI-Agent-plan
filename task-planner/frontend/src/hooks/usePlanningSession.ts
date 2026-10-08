@@ -240,12 +240,20 @@ function reducer(state: SessionState, action: Action): SessionState {
       const latest = state.revisions.length
       return {
         ...state,
-        phase: action.result.ok ? 'done' : 'failed',
+        // **phase 保持不动。** 它描述的是「这次会话跑得怎么样」，
+        // 不是「你正在看的那一版怎么样」。
+        //
+        // 之前这里写成 `action.result.ok ? 'done' : 'failed'` ——
+        // 结果是「点开一版失败的修订看一眼」会把整个会话标成失败，
+        // 而失败态的提示条上挂的是「重新开始」按钮（见 App.tsx），
+        // 用户只想看看旧版本，一不留神就把手上的计划丢了。
+        phase: state.phase,
         result: action.result,
         activeSeq: action.seq,
         // 查证记录属于「最新一次运行」，看旧版时留着它会张冠李戴
         events: action.seq === latest ? state.events : [],
         clarification: null,
+        // error 只描述**这一版**：切到一版好的旧版本，提示就该消失。
         error: action.result.ok ? null : '这一版没有产出合规的计划。',
       }
     }
@@ -407,6 +415,8 @@ export interface UsePlanningSession {
   remove: (sessionId: string) => Promise<void>
   /** 关掉提示条（不改变会话状态） */
   dismissError: () => void
+  /** 只弹一条提示，不动阶段与历史（给「复制失败」这类旁路反馈用） */
+  notify: (message: string) => void
   refreshHistory: () => Promise<void>
   reset: () => void
 }
@@ -416,12 +426,39 @@ export function usePlanningSession(): UsePlanningSession {
   const handleRef = useRef<StreamHandle | null>(null)
   const sessionRef = useRef<string | null>(null)
 
+  /**
+   * 「加载某个会话」的请求序号。每次 start / restore / reset 都自增。
+   *
+   * 用途：**丢弃过期响应**。快速连点两条历史时两个 `getSession` 会并发，
+   * 慢的那个后返回就会覆盖掉用户真正选中的那条 —— 界面内容与侧栏高亮不一致。
+   * 每个请求记下自己发起时的序号，回来后比对；不是最新的就直接丢掉。
+   *
+   * 用 ref 而不是 state：这些比较发生在 await 之后，
+   * state 在闭包里会过期，而 ref 永远是最新值。
+   */
+  const requestSeqRef = useRef(0)
+
+  /**
+   * 提交守卫。`start()` 里 `await createSession` 期间 `phase` 还没变、
+   * `busy` 仍是 false，输入框的提交按钮**仍然可点** ——
+   * 第二次点击会再建一个会话，服务端留下孤儿记录（既烧额度又污染「最近」）。
+   *
+   * 用 ref 而不是 state：setState 是异步的，等它生效时第二次点击已经进来了。
+   */
+  const submittingRef = useRef(false)
+
   // 会话 id 同时存在 ref 里：回调里需要最新值，而 state 在闭包里会过期
   sessionRef.current = state.sessionId
 
   const closeStream = useCallback(() => {
     handleRef.current?.close()
     handleRef.current = null
+  }, [])
+
+  /** 作废所有在途的加载请求（新的加载开始时、以及 reset 时调用）。 */
+  const invalidatePendingLoads = useCallback(() => {
+    requestSeqRef.current += 1
+    return requestSeqRef.current
   }, [])
 
   // 首屏先用本地缓存铺上，别让侧栏空着等网络
@@ -459,23 +496,35 @@ export function usePlanningSession(): UsePlanningSession {
 
   const start = useCallback(
     async (task: string) => {
+      // 防重复提交：`await createSession` 期间 busy 还是 false，按钮仍可点。
+      // 这里同步置位（ref 不是 state），第二次点击会直接被挡回去。
+      if (submittingRef.current) return
+      submittingRef.current = true
+
       closeStream()
+      const seq = invalidatePendingLoads()
       dispatch({ type: 'leaving', mode: 'fade' })
       try {
         const created = await createSession(task)
+        // 等待期间用户可能已经点了别的历史记录 —— 那次操作序号更新，
+        // 我们这份结果就作废，否则会把用户选中的内容顶掉。
+        if (seq !== requestSeqRef.current) return
         dispatch({ type: 'started', sessionId: created.session_id, task })
         handleRef.current = openEventStream(created.session_id, {
           onEvent: (event) => dispatch({ type: 'event', event }),
           onTransportError: (message) => dispatch({ type: 'failed', message }),
         })
       } catch (err) {
+        if (seq !== requestSeqRef.current) return
         dispatch({
           type: 'failed',
           message: err instanceof Error ? err.message : '提交失败，请稍后重试。',
         })
+      } finally {
+        submittingRef.current = false
       }
     },
-    [closeStream],
+    [closeStream, invalidatePendingLoads],
   )
 
   const answer = useCallback(
@@ -515,10 +564,14 @@ export function usePlanningSession(): UsePlanningSession {
   const restore = useCallback(
     async (sessionId: string) => {
       closeStream()
+      // 序号仲裁：连点两条历史时，慢的那个响应回来后会被丢掉，
+      // 不会覆盖用户真正选中的那条。
+      const seq = invalidatePendingLoads()
       // 打开已有记录：计划是现成的，别让用户等动画
       dispatch({ type: 'leaving', mode: 'fast' })
       try {
         const view = await getSession(sessionId)
+        if (seq !== requestSeqRef.current) return
 
         // 还在跑：重新接上事件流，而不是当成一条失败的记录。
         // 服务端保留着全部事件，`?cursor=0` 会从头重放，
@@ -545,6 +598,7 @@ export function usePlanningSession(): UsePlanningSession {
           error: view.error,
         })
       } catch (err) {
+        if (seq !== requestSeqRef.current) return
         dispatch({
           type: 'failed',
           message:
@@ -556,7 +610,7 @@ export function usePlanningSession(): UsePlanningSession {
         void refreshHistory()
       }
     },
-    [closeStream, refreshHistory],
+    [closeStream, invalidatePendingLoads, refreshHistory],
   )
 
   /**
@@ -622,11 +676,25 @@ export function usePlanningSession(): UsePlanningSession {
 
   const reset = useCallback(() => {
     closeStream()
+    // 作废在途的加载：否则「点历史 → 立刻返回首页」时，
+    // 那个还没回来的 getSession 会把首页又顶成旧会话。
+    invalidatePendingLoads()
     dispatch({ type: 'reset' })
-  }, [closeStream])
+  }, [closeStream, invalidatePendingLoads])
 
   const dismissError = useCallback(() => {
     dispatch({ type: 'dismissError' })
+  }, [])
+
+  /**
+   * 只弹一条提示，不动阶段、不动历史。
+   *
+   * 给调用方用的「旁路反馈」入口 —— 典型场景是复制失败：
+   * 那既不改变会话状态，也不该把主画布切成 failed，
+   * 但用户**必须**知道没复制成功，否则他会以为剪贴板里已经有内容了。
+   */
+  const notify = useCallback((message: string) => {
+    dispatch({ type: 'notice', message })
   }, [])
 
   /**
@@ -646,6 +714,9 @@ export function usePlanningSession(): UsePlanningSession {
         // 删的正是当前打开的那条：主画布要一起收掉。
         // 不收的话你会看着一个已经不存在的记录，复制 Markdown 还会成功。
         closeStream()
+        // 同理作废在途加载：正在恢复这条时把它删掉，
+        // 那个响应回来会把它又画回主画布。
+        invalidatePendingLoads()
         dispatch({ type: 'reset' })
       }
 
@@ -672,6 +743,7 @@ export function usePlanningSession(): UsePlanningSession {
     selectVersion,
     remove,
     dismissError,
+    notify,
     refreshHistory,
     reset,
   }

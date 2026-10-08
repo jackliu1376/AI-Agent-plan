@@ -258,7 +258,12 @@ def _rotate_if_needed(path: Path) -> None:
 
 
 def load_runs(path: Path | None = None, *, include_rotated: bool = False) -> list[dict[str, Any]]:
-    """读回运行记录。坏行会被跳过而不是让整个文件读不出来。"""
+    """读回运行记录。坏行会被跳过而不是让整个文件读不出来。
+
+    **逐行流式读取，不把整个文件读进内存。** 日志上限 50 MB，
+    加上 ``.1`` 轮转文件后 ``read_text()`` 会让峰值内存翻好几倍 ——
+    而这个函数是 `run_report` 的主路径，跑在普通笔记本上。
+    """
     target = path or log_path()
     files = [target]
     if include_rotated:
@@ -270,16 +275,17 @@ def load_runs(path: Path | None = None, *, include_rotated: bool = False) -> lis
     for file in files:
         if not file.exists():
             continue
-        for line in file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # 容忍被截断的坏行
-            if isinstance(obj, dict):
-                records.append(obj)
+        with file.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # 容忍被截断的坏行
+                if isinstance(obj, dict):
+                    records.append(obj)
     return records
 
 

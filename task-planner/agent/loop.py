@@ -469,6 +469,12 @@ class Orchestrator:
                             # `latency_ms · 预算 1/12`。失败时为空串。
                             "summary": _tool_summary(call.name, result),
                             "error_code": result.error.code if result.error else None,
+                            # 错误详情也要带上。原来只传 code，前端只能显示
+                            # 「参数不合法」这种四字标签 —— 而后端其实写了
+                            # 「预报只覆盖到 10-23，请改用区间内的日期」这种
+                            # 可执行的说明。把它丢掉，用户看到的就是「为什么
+                            # 报错了」而得不到答案。
+                            "error_message": result.error.message if result.error else None,
                             "latency_ms": result.meta.latency_ms,
                             "attempts": result.meta.attempts,
                             "cached": result.meta.cached,

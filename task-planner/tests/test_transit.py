@@ -591,3 +591,47 @@ def test_seat_class_mapping_covers_common_classes() -> None:
         assert code in SEAT_CLASS_NAMES
     assert SEAT_CLASS_NAMES["13"] == "二等座"
     assert SEAT_CLASS_NAMES["21"] == "商务座"
+
+
+# ---------------------------------------------------------------------------
+# 覆盖范围：境外必须**在发起请求之前**就判掉
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("origin", "destination"),
+    [
+        ("上海", "伦敦"),
+        ("伦敦", "巴黎"),
+        ("北京", "纽约"),
+    ],
+)
+def test_rejects_overseas_before_calling(
+    monkeypatch: pytest.MonkeyPatch, origin: str, destination: str
+) -> None:
+    """境外路线要在调用之前判掉，且**不能说成「两地之间没有交通」**。
+
+    回归用：曾经把高德的 `INSUFFICIENT_ABROAD_PRIVILEGES`（境外服务需单独
+    申请权限）包成一句「可能两地之间没有公共交通方案」——
+    上海→伦敦当然没有铁路方案，但原因不是「没有」，是「查不了」。
+    用户会因此以为真的没法去。
+    """
+    import mcp_server.tools.transit as mod
+
+    monkeypatch.setenv("AMAP_API_KEY", "k")
+
+    def _explode(**kw: object) -> object:
+        raise AssertionError("境外路线不该发起请求 —— 配额有限，且必然失败")
+
+    monkeypatch.setattr(mod.httpx, "Client", _explode)
+
+    result = invoke(
+        "query_transit_options", {"origin": origin, "destination": destination}
+    )
+
+    assert not result.ok
+    assert result.error.code == ERR_NOT_FOUND
+    assert "覆盖" in result.error.message
+    # 关键：不能说成「没有交通方案」
+    assert "没有交通" in result.error.message or "不是「两地之间没有交通」" in result.error.message
+    assert "estimate_route" in result.error.message, "要给出可用的替代方案"

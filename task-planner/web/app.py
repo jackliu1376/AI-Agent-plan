@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import os
 import time
@@ -52,7 +53,7 @@ from agent.loop import Orchestrator, revision_instruction, wrap_user_input
 from agent.run_log import record_run, settings_params
 from agent.tool_runner import LocalToolRunner
 from mcp_server.tools.base import load_all_tools, openai_tool_schemas
-from web.session import LIVE_STATUSES, Session, SessionStore
+from web.session import LIVE_STATUSES, TERMINAL_EVENT_TYPES, Session, SessionStore
 from web.session_db import SessionDB, is_enabled
 
 LLMFactory = Callable[[Settings], Any]
@@ -177,6 +178,30 @@ class RateLimiter:
         if not hits:
             return 0
         return max(1, int(self._window - (time.monotonic() - hits[0])))
+
+    def prune(self) -> int:
+        """清掉已经全部滑出窗口的 key，返回移除条数。
+
+        **`_hits` 以客户端 IP 为 key 且从不删除**：列表本身在 `allow()` 里会被
+        裁剪，但 key 会永久留着。来自大量不同 IP 的请求（或反向代理配错导致
+        取到的 IP 五花八门）会让这个字典无限增长 —— 单机内存实现也得有人收尸。
+
+        由 `_janitor_loop` 定期调用，所以不用在 `allow()` 里做（那条路径要尽量便宜）。
+        """
+        now = time.monotonic()
+        stale = [
+            key
+            for key, hits in self._hits.items()
+            if not any(now - t < self._window for t in hits)
+        ]
+        for key in stale:
+            del self._hits[key]
+        return len(stale)
+
+    @property
+    def tracked_keys(self) -> int:
+        """当前记录的 key 数（供测试与观测）。"""
+        return len(self._hits)
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +570,7 @@ async def _janitor_loop(app: FastAPI, interval: float) -> None:
         await asyncio.sleep(interval)
         try:
             app.state.store.evict()
+            app.state.limiter.prune()
             for session_id, task in list(app.state.tasks.items()):
                 if task.done():
                     app.state.tasks.pop(session_id, None)
@@ -621,9 +647,57 @@ async def _settle_run(
         await session.set_status("done")
 
 
-async def _drive_session(app: FastAPI, session: Session) -> None:
-    """后台驱动一次规划（初版），把事件写进会话。"""
+async def _close_run(llm: Any, orch: Orchestrator | None) -> None:
+    """释放一次运行占用的资源（LLM 连接池、工具通道）。
+
+    **绝不抛异常。** 这是收尾动作，失败不该改变会话状态，也不该盖掉
+    真正的业务异常。每次都新建 LLM 客户端却不关，会累积 fd / socket；
+    MCP 通道不关则会留下子进程。
+
+    依次尝试 ``aclose``（异步，工具通道用）与 ``close``（同步，LLM 客户端用）——
+    两个名字都试是因为两种通道的约定不同，写死一个会让另一个静默漏掉。
+    """
+    for target in (orch.runner if orch is not None else None, llm):
+        for name in ("aclose", "close"):
+            closer = getattr(target, name, None)
+            if not callable(closer):
+                continue
+            try:
+                result = closer()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:  # noqa: BLE001 - 收尾失败不该影响主流程
+                pass
+            break  # 一个对象只关一次
+
+
+async def _drive(
+    app: FastAPI,
+    session: Session,
+    *,
+    source: str,
+    stream_args: tuple[Any, ...] = (),
+    stream_kwargs: dict[str, Any] | None = None,
+    feedback: str = "",
+) -> None:
+    """驱动一次运行：跑编排循环、把事件写进会话、收尾登记版本。
+
+    **初版与修订共用这一条路径。** 两者的差别只有三处：传给 ``run_stream``
+    的参数、``source`` 标签、以及是否登记 ``feedback``。原来拆成两个函数，
+    任何一处改动（比如下面那个「终态事件要扣后」）都得记得改两遍 ——
+    而漏改的那一遍只会在某一条路径上偶发，最难查。
+
+    开一条「直接改 JSON」的旁路就等于给整个护栏体系留后门，
+    所以两条路径都走完整的 ``run_stream``：预算门控、DAG 校验、
+    修复重试、注入检测一个都不能少。
+
+    本期刻意**不做证据复用**：修订时上次查的天气/票价一律重查。
+    慢一点，但绝对不会出现「用过时数据算出来的新计划」——
+    那种错误没有任何测试能发现，而它恰好是这个项目一直在防的。
+    """
     await session.set_status("running")
+    llm: Any = None
+    orch: Orchestrator | None = None
     try:
         llm = app.state.llm_factory(app.state.settings)
         orch = Orchestrator(
@@ -632,10 +706,28 @@ async def _drive_session(app: FastAPI, session: Session) -> None:
             app.state.settings,
             ask_user=session.ask_user,
         )
-        async for event in orch.run_stream(session.task):
+
+        # 终态事件可能**不止一个**：`run_stream` 在运行期异常时先推 error，
+        # 随后仍会走到末尾推一条 plan_ready（ok=False）。所以要用列表按序攒着，
+        # 只留最后一个会把 error 吞掉 —— 前端与测试都靠 error 判断「失败了」。
+        terminals: list[Event] = []
+        async for event in orch.run_stream(*stream_args, **(stream_kwargs or {})):
+            if event.type in TERMINAL_EVENT_TYPES:
+                # 终态事件**先扣下**，等 _settle_run 把最终状态落盘之后再推。
+                #
+                # 不扣的话客户端收到 plan_ready 就会立刻来查，而那时
+                # `set_status("done")` 的落盘还在线程池里排着 —— 列表读的是磁盘，
+                # 于是看到「还在跑」。极端情况下（紧接着重启服务）
+                # 启动时的 mark_interrupted 会把它标成 interrupted，
+                # 用户明明拿到了计划，历史里却写着「被中断」。
+                terminals.append(event)
+                continue
             await session.emit(event)
 
-        await _settle_run(app, session, orch, source="web")
+        await _settle_run(app, session, orch, source=source, feedback=feedback)
+
+        for event in terminals:
+            await session.emit(event)
     except asyncio.CancelledError:
         await session.set_status("failed")
         raise
@@ -643,44 +735,35 @@ async def _drive_session(app: FastAPI, session: Session) -> None:
         session.error = f"{type(exc).__name__}: {exc}"
         await session.emit(Event("error", {"message": session.error}))
         await session.set_status("failed")
+    finally:
+        # 事件流的收尾判据之一（见 Session.stream_done）。
+        # 必须在 set_status 之后置位：先置位会让流在终态事件推出前关闭。
+        session.driver_done = True
+        await _close_run(llm, orch)
+
+
+async def _drive_session(app: FastAPI, session: Session) -> None:
+    """后台驱动一次规划（初版）。"""
+    await _drive(app, session, source="web", stream_args=(session.task,))
 
 
 async def _drive_revision(app: FastAPI, session: Session, feedback: str) -> None:
     """按用户反馈做一次**增量修订**。
 
-    与 ``_drive_session`` 的差别只有两处：注入 ``history``（上一版计划）、
-    以及把产出登记成一个新版本。**其余全走同一条 ``run_stream`` 管道** ——
-    护栏（预算门控、DAG 校验、修复重试、注入检测）一个都不能少。
-    开一条「直接改 JSON」的旁路，就等于给整个护栏体系留了个后门。
-
-    本期刻意**不做证据复用**：上次查的天气/票价一律重查。
-    慢一点，但绝对不会出现「用过时数据算出来的新计划」——
-    那种错误没有任何测试能发现，而它恰好是这个项目一直在防的。
+    与初版的差别只有传参：注入 ``history``（上一版计划）与 ``instruction``
+    （写死「只改受影响的部分」的指令）。其余全走同一条 ``_drive`` 管道。
     """
-    await session.set_status("running")
-    try:
-        llm = app.state.llm_factory(app.state.settings)
-        orch = Orchestrator(
-            llm,
-            LocalToolRunner(),
-            app.state.settings,
-            ask_user=session.ask_user,
-        )
-        async for event in orch.run_stream(
-            feedback,
-            history=_revision_history(session),
-            instruction=revision_instruction(feedback),
-        ):
-            await session.emit(event)
-
-        await _settle_run(app, session, orch, source="revision", feedback=feedback)
-    except asyncio.CancelledError:
-        await session.set_status("failed")
-        raise
-    except Exception as exc:  # noqa: BLE001
-        session.error = f"{type(exc).__name__}: {exc}"
-        await session.emit(Event("error", {"message": session.error}))
-        await session.set_status("failed")
+    await _drive(
+        app,
+        session,
+        source="revision",
+        stream_args=(feedback,),
+        stream_kwargs={
+            "history": _revision_history(session),
+            "instruction": revision_instruction(feedback),
+        },
+        feedback=feedback,
+    )
 
 
 # 供 `uv run uvicorn web.app:app` 直接使用

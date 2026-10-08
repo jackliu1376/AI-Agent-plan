@@ -63,6 +63,21 @@ function VersionMenu({
 }) {
   const [open, setOpen] = useState(false)
   const holderRef = useRef<HTMLSpanElement | null>(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+
+  // 打开后把焦点移到当前选中项（没有就移到第一项）。
+  //
+  // 不这么做的话焦点仍留在触发按钮上，而方向键处理挂在菜单容器上 ——
+  // 键盘用户**根本进不去菜单**：按 ↑↓ 毫无反应，Tab 则会直接跳过整块。
+  useEffect(() => {
+    if (!open) return
+    const items = Array.from(
+      holderRef.current?.querySelectorAll<HTMLButtonElement>('.vmenu-item') ?? [],
+    )
+    const current =
+      items.find((el) => el.getAttribute('aria-checked') === 'true') ?? items[0]
+    current?.focus()
+  }, [open])
 
   // 点外面关、Esc 关。用 mousedown 而不是 click：
   // 在菜单里按下、拖到外面松开，不该被当成「点了外部」。
@@ -72,7 +87,12 @@ function VersionMenu({
       if (!holderRef.current?.contains(event.target as Node)) setOpen(false)
     }
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key === 'Escape') {
+        setOpen(false)
+        // 焦点还给触发按钮。不还的话它会掉到 <body> 上，
+        // 键盘用户按 Tab 就得从头再走一遍整个页面。
+        triggerRef.current?.focus()
+      }
     }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
@@ -83,13 +103,27 @@ function VersionMenu({
   }, [open])
 
   const onKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End']
+    if (!keys.includes(event.key)) return
     event.preventDefault()
     const items = Array.from(
       holderRef.current?.querySelectorAll<HTMLButtonElement>('.vmenu-item') ?? [],
     )
+    if (items.length === 0) return
+
+    if (event.key === 'Home') {
+      items[0]?.focus()
+      return
+    }
+    if (event.key === 'End') {
+      items[items.length - 1]?.focus()
+      return
+    }
+    // -1 表示焦点还不在任何一项上（例如刚用鼠标点开）——
+    // 此时 ↓ 应落到第一项、↑ 落到最后一项。
     const current = items.indexOf(document.activeElement as HTMLButtonElement)
-    const next = event.key === 'ArrowDown' ? current + 1 : current - 1
+    const step = event.key === 'ArrowDown' ? 1 : -1
+    const next = current === -1 ? (step === 1 ? 0 : items.length - 1) : current + step
     items[(next + items.length) % items.length]?.focus()
   }
 
@@ -97,9 +131,9 @@ function VersionMenu({
   const ordered = [...revisions].sort((a, b) => b.seq - a.seq)
 
   return (
-    <span className="vmenu-holder" ref={holderRef}>
+    <span className="vmenu-holder" ref={holderRef} onKeyDown={onKeyDown}>
       {open && (
-        <div className="vmenu" role="menu" aria-label="历史版本" onKeyDown={onKeyDown}>
+        <div className="vmenu" role="menu" aria-label="历史版本">
           <div className="vmenu-head">历史版本</div>
           {ordered.map((item) => (
             <button
@@ -152,6 +186,7 @@ function VersionMenu({
       )}
       <button
         type="button"
+        ref={triggerRef}
         className={`cbar-btn${open ? ' on' : ''}`}
         onClick={() => setOpen((v) => !v)}
         disabled={disabled}

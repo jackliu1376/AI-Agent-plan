@@ -97,12 +97,15 @@ body {
   overflow: hidden;
 }
 
+/* 左右不留 padding —— 品牌区要和下方的「新建任务」按钮**框**对齐。
+   按钮框从 .rail 的 12px 内容边距开始，而 logo 原来被三层 padding
+   （rail 12 + brand-row 6 + brand 6）推到了 24px，视觉上两块不齐。 */
 .brand-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 4px 6px 0;
+  padding: 4px 0 0;
 }
 
 /* 品牌区是按钮（回首页）。做成 button 而不是 div + onClick：
@@ -111,8 +114,11 @@ body {
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   min-width: 0;
+  /* 负 margin 抵消掉 padding：内容（logo）贴齐 12px 的按钮框左缘，
+     而 hover 背景仍有 6px 内边距，不至于紧贴文字。 */
+  margin-left: -6px;
   padding: 5px 6px;
   border: none;
   border-radius: 8px;
@@ -148,7 +154,7 @@ body {
 
 .brand-name {
   display: block;
-  font-size: 13.5px;
+  font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.25;
@@ -157,7 +163,7 @@ body {
 
 .brand-sub {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--ink-3);
   line-height: 1.3;
   white-space: nowrap;
@@ -280,13 +286,17 @@ body {
 }
 
 .rail-item {
+  position: relative;
   display: flex;
-  align-items: center;
+  /* **顶部对齐**。条目改成双行之后，居中的圆点会飘在两行文字中间 ——
+     单行时无所谓，双行时看着很别扭。 */
+  align-items: flex-start;
   gap: 8px;
   width: 100%;
   /* 右侧永久预留 30px 给删除按钮。改成悬浮时才加内边距的话，
-     按钮一出现文字就会左右跳一下。 */
-  padding: 7px 30px 7px 10px;
+     按钮一出现文字就会左右跳一下。
+     左侧 13px 是给选中态的括号弧线让位（弧宽 8px + 5px 间隙）。 */
+  padding: 7px 30px 7px 13px;
   border: none;
   border-radius: 8px;
   background: none;
@@ -295,6 +305,40 @@ body {
   color: var(--ink-2);
   text-align: left;
   cursor: pointer;
+}
+
+/* 选中态的括号弧线：**中间粗、两端细**（像笔画的起收笔）。
+   形状由 SVG 的填充轮廓控制（见 Rail.tsx 的 BracketArc）——
+   CSS `border` 在圆角处宽度恒定，画不出粗细变化。
+   颜色继承 .rail-item.active 的 color，不用单独设。 */
+.rail-arc {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 8px;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* 两行文字：第一行任务名（完整宽度），第二行时间 · 状态。 */
+.rail-item-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.rail-item-meta {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-3);
+}
+
+/* 需要用户重跑或处理的状态（失败 / 未产出）用告警色 ——
+   只靠圆点颜色的话，色盲用户看不出差别。 */
+.rail-item-meta .meta-warn {
+  color: var(--rose);
 }
 
 /* 用 .rail-row:hover 而不是 .rail-item:hover：
@@ -316,6 +360,9 @@ body {
   flex: none;
   border-radius: 50%;
   background: var(--line-2);
+  /* 对齐第一行文字的中线：行高 13×1.35≈17.6px，圆点 6px，
+     所以偏移 (17.6-6)/2 ≈ 5.5px。 */
+  margin-top: 5.5px;
 }
 
 .rail-item.active .dot {
@@ -460,15 +507,36 @@ body {
   gap: 10px;
   padding: 0;
   justify-content: center;
+  align-items: center;
+}
+
+/* 展开态用负 margin 把 logo 拉到 12px（对齐「新建任务」的框），
+   但折叠态是纵向布局，那个负 margin 只会把 logo 顶偏 —— 这里归零，
+   交给上面的 align-items: center 居中。 */
+.shell.collapsed .brand {
+  margin-left: 0;
 }
 
 .shell.collapsed .brand-text,
 .shell.collapsed .rail-btn-text,
 .shell.collapsed .rail-group > h3,
 .shell.collapsed .rail-item-text,
+.shell.collapsed .rail-item-meta,
 .shell.collapsed .rail-foot .k,
 .shell.collapsed .rail-foot .v-text,
 .shell.collapsed .rail-empty {
+  display: none;
+}
+
+/* 折叠后文字都藏了，两行的容器不该再占 flex 空间 ——
+   否则 32px 宽的条目里居中的首字方块会被挤偏。 */
+.shell.collapsed .rail-item-body {
+  flex: none;
+}
+
+/* 折叠态的条目只有 36px 宽，弧线会压在首字方块上。
+   折叠态的选中已经由「黑底方块」表达得很清楚了，弧线在这里是多余的。 */
+.shell.collapsed .rail-arc {
   display: none;
 }
 
@@ -527,9 +595,17 @@ body {
   border-color: var(--ink);
 }
 
+/* 折叠态页脚改成纵向 flex + 居中。
+   原来靠 .seg 自己的 `margin: 0 auto` 居中，但那是**失效的** ——
+   `.seg` 定宽 42px 比容器内容区（39px）还宽，而 CSS 规定
+   `auto` margin 在子元素溢出时按 0 处理，结果是靠左而不是居中，
+   于是色板中心偏到 31px，而绿点在 29.5px，两个点对不齐。 */
 .shell.collapsed .rail-foot {
   padding: 10px 0;
   width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .shell.collapsed .rail-foot .v {
@@ -704,24 +780,40 @@ body {
 
 /* ---------- 任务回显 ---------- */
 
+/* 页头：任务名 + 副行，右侧分享按钮。
+   下方是「已查证」卡片（.probe 自带边框），所以这里**不再画分隔线** ——
+   画了会和卡片上沿重复成两条线。 */
 .echo {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  /* 双行之后改顶部对齐 —— 居中会让分享按钮悬在两行之间的高度上 */
+  align-items: flex-start;
+  gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 18px;
 }
 
-.echo-task {
-  font-size: 15px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
+/* 任务名和副行包成一体：右侧分享按钮对齐的是整块，不是第一行。 */
+.echo-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
 }
 
-.echo-meta {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+.echo-task {
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+/* 副行：时间 · 版本 · 步数（跑着的时候是「进行中 · 已查证 N 项」）。
+   用 --ink-3 而不是 --ink-2 —— 它是页头里的次要信息，不该和任务名争。 */
+.echo-when {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-3);
 }
 
 /* ============================================================
@@ -764,6 +856,16 @@ body {
 .share-btn:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 1px;
+}
+
+/* 箭头比文字淡一档，并随菜单开合翻转 —— 展开时朝上，收起时朝下。 */
+.share-caret {
+  opacity: 0.65;
+  transition: transform 0.12s;
+}
+
+.share-btn[aria-expanded='true'] .share-caret {
+  transform: rotate(180deg);
 }
 
 /* 按钮在页面顶部，所以菜单**向下**弹（Composer 那个在底部，是向上弹的）。 */
@@ -887,10 +989,60 @@ body {
 
 /* ---------- 三段式进度 ---------- */
 
+/* 三段式进度条。**吸顶**——修订时用户会往下滚去看旧计划，
+   阶段条不能跟着滚走，否则完全不知道还要等多久。
+ *
+ * `.main-body` 有 32px 左右 padding，所以用负 margin 把背景铺到边，
+ * 不然滚动时两侧会透出下面的内容。 */
 .steps-line {
   display: flex;
   align-items: center;
-  margin-bottom: 20px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
+  /* 发丝线：阶段条背景和页面同色，滚动时内容从下面穿过去没有边界，
+     看着像「内容消失在进度条后面」。一条线就够了。 */
+  border-bottom: 1px solid var(--line);
+  margin: 0 -32px 12px;
+  padding: 12px 32px;
+}
+
+/* 修订中：旧计划压暗，一眼分清哪份是旧的。
+   `pointer-events: none` 是因为变暗时不该还能点（版本切换、分享）——
+   新计划马上就来，这时操作旧内容没有意义。 */
+.plan-dimmed {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+/* 首次生成时的骨架屏。只在「正在跑且还没有任何计划」时出现 ——
+   这时页面本来是空的，骨架比一句「生成中」更能说明「马上有东西」。 */
+.plan-skeleton {
+  padding: 4px 0 24px;
+}
+
+.ps-bar {
+  background: var(--surface-2);
+  border-radius: 4px;
+  animation: ps-breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes ps-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ps-bar {
+    animation: none;
+  }
 }
 
 .sl {
@@ -1032,6 +1184,14 @@ body {
 
 .probe-st.err {
   color: var(--rose);
+}
+
+/* 失败原因。用 --ink-2 而不是玫瑰色 —— 右边的状态标签已经是红的了，
+   整行都红会显得吵；这里只要比「正在查询」的 --ink-3 更可读就行。
+   完整消息在 title 里（列表里只放第一句）。 */
+.probe-out em.probe-err {
+  color: var(--ink-2);
+  cursor: help;
 }
 
 /* 跑完后的折叠形态：计划是主角，查证过程退到次要位置但可追溯 */
@@ -1876,7 +2036,7 @@ body {
 
 /* 折叠后侧栏只有 60px：分段控件竖排、只留色块。
    **必须给容器定宽** —— 不给的话按钮会缩成 12px，点都点不到。 */
-.shell.collapsed .seg { grid-template-columns: 1fr; gap: 2px; padding: 2px; width: 42px; margin: 0 auto; }
+.shell.collapsed .seg { grid-template-columns: 1fr; gap: 2px; padding: 2px; width: 36px; }
 .shell.collapsed .seg-i { padding: 6px 0; }
 .shell.collapsed .seg-i span { display: none; }
 
@@ -1999,17 +2159,23 @@ body {
   flex: 1;
 }
 
-/* 模型名是**信息**不是控件：灰底 chip 而不是白底按钮。
-   画成按钮就得能点，而前端现在没有切换模型的入口 —— 那会是个假控件。 */
+/* 模型名。**这是用户要求的「假按钮」** —— 只有按钮的外观，点了没有任何反应。
+ *
+ * 原设计是灰底 chip，理由是「画成按钮就得能点，而前端没有切换模型的入口」。
+ * 现在按用户要求改成黑底按钮的样子，但**语义上它仍然只是信息**：
+ * 用 <span> 而不是 <button>，屏幕阅读器不会把它读成控件，键盘也不会聚焦到它。
+ *
+ * 如果哪天真的加了模型切换，这里要换成 <button> 并接上回调。 */
 .cbar-chip {
   display: inline-flex;
   align-items: center;
   height: 28px;
   padding: 0 10px;
   border-radius: 9px;
-  background: var(--surface-2);
+  background: var(--ink);
   font-size: 12px;
-  color: var(--ink-3);
+  font-weight: 500;
+  color: #fff;
 }
 
 .cbar-send,

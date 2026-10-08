@@ -47,6 +47,9 @@ export interface ToolResultData {
   /** 人话摘要，由后端各工具自己生成（`ToolSpec.summarize`）。失败时为空串。 */
   summary: string
   error_code: string | null
+  /** 失败原因原文。前端在「已查证」列表里显示它 —— 只给错误码的话，
+      用户看到的是「参数不合法」这种四字标签，不知道到底哪里不对。 */
+  error_message: string | null
   latency_ms: number
   attempts: number
   cached: boolean

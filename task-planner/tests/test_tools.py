@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
+import httpx
 import pytest
 
 from common.envelope import (
@@ -16,11 +18,12 @@ from common.envelope import (
     ERR_FILE_ERROR,
     ERR_FORBIDDEN_PATH,
     ERR_NOT_FOUND,
+    ERR_UPSTREAM_ERROR,
     ERR_UPSTREAM_TIMEOUT,
     ToolResult,
 )
 from mcp_server.tools.base import TOOL_REGISTRY, invoke, load_all_tools, openai_tool_schemas
-from mcp_server.tools.route import CALIBRATION
+from mcp_server.tools.route import CALIBRATION, summarize_route
 
 EXPECTED_TOOLS = {
     "get_weather_forecast",
@@ -120,6 +123,65 @@ def test_weather_retries_once_then_fails(broken_weather: dict[str, int]) -> None
     assert broken_weather["attempts"] == 2
 
 
+@pytest.mark.parametrize(
+    ("exc", "expected_code"),
+    [
+        (httpx.TimeoutException("timed out"), ERR_UPSTREAM_TIMEOUT),
+        (httpx.ConnectError("connection refused"), ERR_UPSTREAM_ERROR),
+    ],
+)
+def test_weather_network_errors_are_typed(
+    monkeypatch: pytest.MonkeyPatch, exc: Exception, expected_code: str
+) -> None:
+    """网络异常必须映射成**语义准确**的错误码，而不是笼统的 UNEXPECTED。
+
+    回归用：曾经 ``resolve_city`` 里的地理编码调用完全没有 try，
+    预报抓取也只 ``except httpx.HTTPStatusError`` —— 而
+    ``httpx.TimeoutException`` / ``ConnectError`` 都不是它的子类，
+    会一路冒泡到 ``invoke()`` 被归成 ``UNEXPECTED``。
+    行为上仍可重试，但错误码说不清是「网络慢」还是「上游挂了」。
+    """
+    import mcp_server.tools.weather as weather_mod
+
+    def _boom(url: str, params: dict[str, Any]) -> dict[str, Any]:
+        raise exc
+
+    monkeypatch.setattr(weather_mod, "_fetch_json", _boom)
+
+    # 「不存在的城市」逼它走地理编码兜底通道；成都走本地表、零网络
+    result = invoke(
+        "get_weather_forecast",
+        {"city": "不存在的城市", "start_date": "2026-10-03", "end_date": "2026-10-04"},
+        retries=0,
+    )
+    assert not result.ok
+    assert result.error.code == expected_code
+    assert "城市解析" in result.error.message, "消息应说明出错的是哪个阶段"
+
+
+def test_weather_network_error_is_not_reported_as_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """网络故障不能被报成「查无此城」。
+
+    这两者会导向完全不同的处理：NOT_FOUND 不可重试，模型会去换城市；
+    UPSTREAM_* 可重试，模型应该稍后再试或如实说「暂时拿不到」。
+    """
+    import mcp_server.tools.weather as weather_mod
+
+    def _boom(url: str, params: dict[str, Any]) -> dict[str, Any]:
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(weather_mod, "_fetch_json", _boom)
+    result = invoke(
+        "get_weather_forecast",
+        {"city": "不存在的城市", "start_date": "2026-10-03", "end_date": "2026-10-04"},
+        retries=0,
+    )
+    assert result.error.code != ERR_NOT_FOUND
+    assert result.error.code == ERR_UPSTREAM_ERROR
+
+
 # ---------------------------------------------------------------------------
 # T3 本地景点库（TC-05）
 # ---------------------------------------------------------------------------
@@ -155,6 +217,27 @@ def test_attractions_unknown_city_lists_available() -> None:
     assert len(result.error.message) < 400, (
         f"提示过长（{len(result.error.message)} 字符），可能又列了全部城市"
     )
+
+
+def test_attractions_distinguishes_missing_city_from_empty_filter() -> None:
+    """「城市没收录」与「筛选太窄」必须给出**不同**的失败原因。
+
+    混在一起说会误导模型：前者该换数据源，后者该放宽条件再查一次。
+    （前车之鉴：高德的「覆盖不到」被写成「两地之间没有交通方案」，把用户带偏。）
+    """
+    missing = invoke("query_attractions_db", {"city": "火星"})
+    assert not missing.ok
+    assert "没有收录" in missing.error.message
+    assert "筛空" not in missing.error.message
+
+    too_narrow = invoke(
+        "query_attractions_db", {"city": "成都", "tags": ["这个标签不存在"]}
+    )
+    assert not too_narrow.ok
+    assert "筛空" in too_narrow.error.message
+    assert "没有收录" not in too_narrow.error.message
+    # 放宽条件是有用的建议，所以要把用到的条件回显出来
+    assert "这个标签不存在" in too_narrow.error.message
 
 
 def test_attractions_is_idempotent() -> None:
@@ -257,6 +340,31 @@ def test_estimate_route_is_symmetric() -> None:
     a = invoke("estimate_route", {"origin": "北京", "destination": "西安", "mode": "hsr"})
     b = invoke("estimate_route", {"origin": "西安", "destination": "北京", "mode": "hsr"})
     assert a.data["distance_km"] == b.data["distance_km"]
+
+
+def test_train_is_cheaper_and_slower_than_hsr() -> None:
+    """普速必须**真的**按普速参数算，不能复用高铁分档。
+
+    回归用：曾经 ``RAIL_MODES = {"hsr", "train"}`` 把两者都送进
+    ``_estimate_rail()``，导致 ``MODE_PROFILE["train"]`` 成了死代码 ——
+    普速按高铁算出来时间少一半、价格高一倍，而 ``mode_label``
+    还写着「普速列车」。这条断言会立刻抓住那次回归。
+    """
+    args = {"origin": "上海", "destination": "成都"}
+    hsr = invoke("estimate_route", {**args, "mode": "hsr"}).data
+    train = invoke("estimate_route", {**args, "mode": "train"}).data
+
+    assert train["duration_hours"] > hsr["duration_hours"], "普速应该比高铁慢"
+    assert train["estimated_cost"] < hsr["estimated_cost"], "普速应该比高铁便宜"
+
+    # 差距要足够大才算「两种方式」，而不是参数微调
+    assert train["duration_hours"] > hsr["duration_hours"] * 1.5
+    assert train["estimated_cost"] < hsr["estimated_cost"] * 0.7
+
+    # 标签也要一致：摘要与 note 不能一个说「火车」一个说「普速列车」
+    assert "普速" in train["note"]
+    assert "普速" in summarize_route(train)
+    assert "高铁" not in summarize_route(train)
 
 
 def test_estimate_route_unknown_city() -> None:

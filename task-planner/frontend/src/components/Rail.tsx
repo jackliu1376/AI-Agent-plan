@@ -16,10 +16,11 @@ import type { HistoryEntry } from '../hooks/usePlanningSession'
 import type { BackendStatus } from '../hooks/useBackendHealth'
 import type { Palette } from '../hooks/usePalette'
 import type { SessionStatus } from '../api/types'
+import { fmtWhen } from '../lib/formatTime'
 import { PaletteSwitch } from './PaletteSwitch'
 
 /** Cairn 的品牌标记：三块叠石。用 inline SVG 而不是图片，颜色随主题。 */
-function BrandMark({ size = 24 }: { size?: number }) {
+function BrandMark({ size = 28 }: { size?: number }) {
   return (
     <svg
       className="brand-mark"
@@ -72,6 +73,35 @@ function TrashIcon() {
         strokeWidth="1.25"
         strokeLinecap="round"
         strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+/**
+ * 选中态的括号弧线：**中间粗、两端细**。
+ *
+ * 为什么是 SVG 而不是 CSS `border`
+ * ---------------------------------
+ * `border` 在圆角处宽度是**恒定**的（沿法线方向 2px 就是 2px），
+ * 画不出「起笔收笔」的粗细变化。要这个效果只能画**填充轮廓** ——
+ * 外沿走一条弧、内沿走另一条，两条之间的宽度自己控制。
+ *
+ * 轮廓怎么读（viewBox 是 `0 0 8 100`，宽 8 高 100 的坐标）：
+ *
+ * - 直线段：外沿 `x=2`、内沿 `x=0` → **宽 2**
+ * - 两端收细：外沿从 `(2,9)` 弯到 `(7.5,.5)`、内沿从 `(0,9)` 弯到 `(6.5,.5)`
+ *   → 端部切口宽 **1**
+ *
+ * `preserveAspectRatio="none"` 让它随条目高度拉伸（条目高随内容变），
+ * 代价是曲线会被纵向压扁一点 —— 对一条装饰弧线来说无所谓。
+ */
+function BracketArc() {
+  return (
+    <svg className="rail-arc" viewBox="0 0 8 100" preserveAspectRatio="none" aria-hidden="true">
+      <path
+        d="M2 9 C2 4 4.5 .5 7.5 .5 L6.5 .5 C3.5 .5 0 4 0 9 L0 91 C0 96 3.5 99.5 6.5 99.5 L7.5 99.5 C4.5 99.5 2 96 2 91 Z"
+        fill="currentColor"
       />
     </svg>
   )
@@ -136,6 +166,31 @@ function statusLabel(entry: HistoryEntry): string {
   if (entry.status === 'interrupted') return '被中断（服务重启）'
   if (entry.status === 'failed') return '运行失败'
   return '跑完了，但没产出合规计划'
+}
+
+/**
+ * 列表第二行用的**短**状态词。
+ *
+ * ``statusLabel()`` 返回的是完整句子（「跑完了，但没产出合规计划」），
+ * 那是给悬停提示看的；208px 的第二行放不下，要缩到 2–3 个字。
+ *
+ * 写成文字而不是只靠圆点颜色，是因为**颜色对色盲用户不可辨** ——
+ * 现在绿点/红点/琥珀点区分状态，去掉颜色就完全看不出差别。
+ */
+function shortStatus(entry: HistoryEntry): string {
+  if (entry.ok === true) return '完成'
+  if (entry.ok === null) {
+    if (entry.status === 'awaiting_input') return '待补充'
+    return '进行中'
+  }
+  if (entry.status === 'failed') return '失败'
+  if (entry.status === 'interrupted') return '被中断'
+  return '未产出'
+}
+
+/** 状态词是否该用告警色（需要用户重跑或处理）。 */
+function needsAttention(entry: HistoryEntry): boolean {
+  return entry.ok === false
 }
 
 export function Rail({
@@ -222,10 +277,23 @@ export function Rail({
                   type="button"
                   className={`rail-item ${dotClass(entry)}${entry.sessionId === activeId ? ' active' : ''}`}
                   onClick={() => onSelect(entry.sessionId)}
-                  title={`${entry.task}\n${statusLabel(entry)}`}
+                  title={`${entry.task}\n${statusLabel(entry)} · ${fmtWhen(entry.ts)}`}
                 >
+                  {/* 只给选中项渲染弧线 —— 没选中的条目挂一个不可见的 SVG 是浪费 */}
+                  {entry.sessionId === activeId && <BracketArc />}
                   <span className="dot" />
-                  <span className="rail-item-text">{entry.task}</span>
+                  {/* 第一行完整留给任务名，时间与状态放第二行 ——
+                      208px 宽里跟状态徽标抢宽度，长任务名会被截断。 */}
+                  <span className="rail-item-body">
+                    <span className="rail-item-text">{entry.task}</span>
+                    <span className="rail-item-meta">
+                      {fmtWhen(entry.ts)}
+                      {' · '}
+                      <span className={needsAttention(entry) ? 'meta-warn' : undefined}>
+                        {shortStatus(entry)}
+                      </span>
+                    </span>
+                  </span>
                   <span className="rail-item-initial" aria-hidden="true">
                     {entry.task.slice(0, 1)}
                   </span>

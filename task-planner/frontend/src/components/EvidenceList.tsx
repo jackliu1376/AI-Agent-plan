@@ -17,11 +17,26 @@ import { labelOf } from '../lib/toolLabels'
 const ERROR_LABELS: Record<string, string> = {
   NOT_FOUND: '没有数据',
   BAD_ARGS: '参数不合法',
+  /** 参数没错，是取值超出了数据源覆盖范围（如查 40 天后的天气）。 */
+  OUT_OF_RANGE: '超出数据范围',
   UPSTREAM_TIMEOUT: '上游超时',
   UPSTREAM_ERROR: '上游错误',
   FORBIDDEN_PATH: '路径不允许',
   FILE_ERROR: '文件错误',
   BUDGET_EXCEEDED: '预算用尽',
+}
+
+/**
+ * 把错误原文压到列表能放下的长度。
+ *
+ * 后端的消息往往很长（「请求的日期超出预报范围：2026-11-14 ~ 2026-11-18。
+ * Open-Meteo 当前只提供 2026-07-07 ~ 2026-10-23 的预报，请改用该区间内的
+ * 日期；更远的日期只能给出气候意义上的经验判断…」），塞进一行会把列表撑散。
+ * 取第一句 + 截断，完整内容放在 `title` 里。
+ */
+function shortError(message: string, max = 46): string {
+  const first = message.split(/[。\n]/)[0] ?? message
+  return first.length > max ? `${first.slice(0, max)}…` : first
 }
 
 type ProbeStatus = 'running' | 'ok' | 'err'
@@ -41,6 +56,9 @@ interface Probe {
    * 带上主语之后，这一行会读作「天气 · 稻城：没有数据」—— 一眼看出是覆盖问题。
    */
   subject: string
+  /** 失败原因原文。只给错误码的话，用户看到的是「参数不合法」这种标签，
+      不知道到底哪里不对 —— 而后端其实写了可执行的说明。 */
+  errorMessage: string | null
 }
 
 /** 从工具参数里抽出「查的是什么」。认不出来就返回空串（不硬凑）。 */
@@ -85,6 +103,7 @@ export function buildProbes(events: PlanEvent[]): Probe[] {
         summary: '',
         errorCode: null,
         subject: subjectOf(event.data.args ?? {}),
+        errorMessage: null,
       })
       const queue = pending.get(event.data.tool)
       if (queue === undefined) pending.set(event.data.tool, [index])
@@ -101,6 +120,7 @@ export function buildProbes(events: PlanEvent[]): Probe[] {
       probe.status = event.data.ok ? 'ok' : 'err'
       probe.summary = event.data.summary
       probe.errorCode = event.data.error_code
+      probe.errorMessage = event.data.error_message ?? null
     }
   }
 
@@ -116,7 +136,14 @@ function statusText(probe: Probe): string {
 }
 
 interface Props {
-  events: PlanEvent[]
+  /**
+   * 已经解析好的查证记录。
+   *
+   * **由调用方算好传进来，不在这里自己算。** `buildProbes` 是 O(events)，
+   * 而 `StageLine` 也要用同一份结果 —— 各自算一遍就是白跑两趟，
+   * 而且流式期间每来一个事件都会重算。
+   */
+  probes: Probe[]
   busy: boolean
 }
 
@@ -137,7 +164,13 @@ function ProbeRows({ probes }: { probes: Probe[] }) {
             </span>
             <span className="probe-out">
               {probe.status === 'err' ? (
-                <em>{probe.summary.length > 0 ? probe.summary : '未取到数据'}</em>
+                probe.errorMessage !== null ? (
+                  <em className="probe-err" title={probe.errorMessage}>
+                    {shortError(probe.errorMessage)}
+                  </em>
+                ) : (
+                  <em>{probe.summary.length > 0 ? probe.summary : '未取到数据'}</em>
+                )
               ) : (
                 probe.summary || <em>正在查询…</em>
               )}
@@ -152,8 +185,7 @@ function ProbeRows({ probes }: { probes: Probe[] }) {
   )
 }
 
-export function EvidenceList({ events, busy }: Props) {
-  const probes = buildProbes(events)
+export function EvidenceList({ probes, busy }: Props) {
   if (probes.length === 0) return null
 
   const done = probes.filter((p) => p.status === 'ok').length
@@ -186,15 +218,48 @@ export function EvidenceList({ events, busy }: Props) {
   )
 }
 
-/** 三段式进度：理解任务 → 查证数据 → 编排计划。 */
-export function StageLine({ events, busy }: { events: PlanEvent[]; busy: boolean }) {
-  const probes = buildProbes(events)
-  const started = events.length > 0
+/** 三段式进度：理解任务 → 查证数据 → 编排计划。
+ *
+ * **修订时不走查证那一段。** 模型直接基于已有信息改计划，
+ * 事件流只有 `run_started → turn_started → plan_ready`，**全程没有 tool_call**
+ * （实测确认）。而按「有没有查证」判阶段的旧逻辑会因此永远停在第一步 ——
+ * 用户看到的就是「阶段条不动，等一会儿新计划直接蹦出来」。
+ *
+ * 所以修订单独走两步：理解反馈 → 编排计划。
+ */
+export function StageLine({
+  probes,
+  eventCount,
+  turned,
+  busy,
+  revising = false,
+}: {
+  /** 与 EvidenceList 共用同一份（由 App 算好），不在这里重算。 */
+  probes: Probe[]
+  /** 事件总数。只用它判断「有没有开始」，不遍历数组。 */
+  eventCount: number
+  /** 是否已经出现过 turn_started。修订时用它把第一段推过去。 */
+  turned: boolean
+  busy: boolean
+  revising?: boolean
+}) {
+  const started = eventCount > 0
   const anyRunning = probes.some((p) => p.status === 'running')
   const hasProbes = probes.length > 0
 
-  // 当前停在哪一段
-  const stage = !started || (!hasProbes && busy) ? 0 : anyRunning ? 1 : busy ? 2 : 2
+  const marks = revising
+    ? ['理解反馈', '编排计划']
+    : ['理解任务', '查证数据', '编排计划']
+
+  const stage = revising
+    ? turned
+      ? 1
+      : 0
+    : !started || (!hasProbes && busy)
+      ? 0
+      : anyRunning
+        ? 1
+        : 2
   const allDone = !busy && started
 
   const state = (index: number): 'done' | 'now' | '' => {
@@ -203,8 +268,6 @@ export function StageLine({ events, busy }: { events: PlanEvent[]; busy: boolean
     if (index === stage) return 'now'
     return ''
   }
-
-  const marks = ['理解任务', '查证数据', '编排计划']
 
   return (
     <div className="steps-line">

@@ -45,20 +45,22 @@ uv run pytest
 
 ## 三条硬性要求如何满足
 
-### 1. Tool Use / Skills —— 8 个功能互异的技能
+### 1. Tool Use / Skills —— 10 个功能互异的技能
 
 | ID | 工具 | 功能 | 类型 | 幂等 |
 |---|---|---|---|---|
 | T1 | `get_weather_forecast` | 城市天气预报（**1.4 万+ 城市，中英文名**） | **外部 API**（Open-Meteo，免 Key） | ✅ |
 | T2 | `fetch_webpage` | 抓取网页正文 | **外部 API** | ✅ |
-| T3 | `query_attractions_db` | 查本地景点库（**12 城市，含币种**） | **本地 SQLite** | ✅ |
+| T3 | `query_attractions_db` | 查本地景点库（**305 城市，含币种**） | **本地 SQLite** | ✅ |
 | T4 | `parse_budget_csv` | 解析预算 CSV | **本地文件** | ✅ |
 | T5 | `convert_currency` | 汇率换算 | 外部 API + 离线兜底 | ✅ |
 | T6 | `estimate_route` | 城际交通估算（**支持国际航线**） | **本地计算**（Haversine） | ✅ |
 | T7 | `save_itinerary` | 计划落盘 | 本地文件（写操作，沙箱） | ❌ |
 | T8 | `ask_user_clarification` | 向用户澄清 | HITL 中断 | ❌ |
+| T9 | `query_transit_options` | 查普速列车班次（含跨天到站） | 本地数据 | ✅ |
+| T10 | `query_attraction_realtime` | 查景点的**实时**开放状态 | 外部 API | ✅ |
 
-最低达标只需 T1 + T3（外部 API + 本地数据库），本项目给了 8 个。
+最低达标只需 T1 + T3（外部 API + 本地数据库），本项目给了 10 个。
 
 ### 城市解析：三层策略
 
@@ -76,7 +78,7 @@ uv run pytest
 
 | 层 | 数据源 | 规模 | 说明 |
 |---|---|---|---|
-| 1 | **策展表** `cities.py` | 170 条 | 人工维护。含**非城市目的地**（圣托里尼、长滩岛、少女峰、马丘比丘…）与译名差异（科伦坡 vs GeoNames 的「可倫坡」）。元数据最全：中文国家名、时区、别名 |
+| 1 | **策展表** `cities.py` | 250 条 | 人工维护。含**非城市目的地**（圣托里尼、长滩岛、少女峰、马丘比丘…）与译名差异（科伦坡 vs GeoNames 的「可倫坡」）。元数据最全：中文国家名、时区、别名 |
 | 2 | **生成索引** `city_index.tsv` | **14,359** 个中文城市名 | 由 `build_city_index.py` 从 GeoNames 生成，覆盖 **229 个国家/地区**。零网络、确定性 |
 | 3 | **在线地理编码** Open-Meteo | — | 最后兜底。拉 10 个候选按「行政级别 + 人口」排序，返回 `confidence` 标记供模型复核 |
 
@@ -87,7 +89,7 @@ uv run pytest
 - 大小写 / 空格：`new york` / `NEW YORK` / `newyork` → 纽约
 - 别名：`NYC` → 纽约、`三藩市` → 旧金山、`乔治市` → 槟城、`西贡` → 胡志明市
 
-### 景点库覆盖（42 个城市 / 282 条景点）
+### 景点库覆盖（305 个城市 / 6,103 条景点）
 
 **中国全部 34 个省级行政区**都已覆盖：
 
@@ -145,7 +147,7 @@ uv run python -m mcp_server.data.seed
 
 ```
 User → Orchestrator(编排循环) → DeepSeek(函数调用决策)
-     → MCPToolRunner(Client) ──stdio/JSON-RPC──→ MCPServer → 8 个工具 → 外部API / SQLite / 文件
+     → MCPToolRunner(Client) ──stdio/JSON-RPC──→ MCPServer → 10 个工具 → 外部API / SQLite / 文件
 ```
 
 - **MCP Server**：`mcp_server/server.py`，用低层 `Server` 的 `on_list_tools` / `on_call_tool` 回调暴露工具，Schema 直接来自注册表（适配 `mcp >= 2.2`；2.x 中 FastMCP 已更名为 MCPServer）。
@@ -165,7 +167,7 @@ uv run task-planner "去三亚玩 4 天" --transport mcp -v
 | 文件 | 来源 | 说明 |
 |---|---|---|
 | `mcp_server/tools/base.py` | 🤖 AI 生成 | 注册表 + 重试/计时/错误映射框架 |
-| `mcp_server/tools/*.py`（8 个工具） | 🤖 AI 生成 | 样板式实现，人工复核过参数校验与错误码 |
+| `mcp_server/tools/*.py`（10 个工具） | 🤖 AI 生成 | 样板式实现，人工复核过参数校验与错误码 |
 | `mcp_server/server.py` | 🤖 AI 生成 | MCP Server 骨架 |
 | `agent/llm_client.py` | 🤖 AI 生成 | OpenAI 兼容客户端样板 |
 | `agent/tool_runner.py` | 🤖 AI 生成 | MCP / Local 双通道 |
@@ -223,15 +225,15 @@ task-planner/
 │  │  ├─ weather.py  web.py  attractions.py  budget.py
 │  │  └─ currency.py route.py storage.py clarify.py
 │  └─ data/
-│     ├─ cities.py          策展城市表（170 条，含非城市目的地）
+│     ├─ cities.py          策展城市表（250 条，含非城市目的地）
 │     ├─ countries.py       国家代码 → 中文名
 │     ├─ city_index.tsv     生成的城市索引（14,359 个中文名，900 KB）
 │     ├─ build_city_index.py 从 GeoNames 重建索引（构建期脚本）
-│     ├─ seed.py            景点库种子数据（88 条，12 个城市）
+│     ├─ seed.py            景点库种子数据（6,103 条，305 个城市）
 │     ├─ attractions.db     自动生成
 │     └─ sample_budget.csv
 ├─ common/envelope.py    统一返回信封 {ok, data, error, meta}
-├─ tests/                TC-01 ~ TC-10 + 城市解析回归
+├─ tests/                TC-01 ~ TC-10 + 城市解析回归（675 项）
 └─ outputs/              计划落盘沙箱
 ```
 
@@ -259,7 +261,7 @@ task-planner/
 uv run pytest -v
 ```
 
-10 个用例对齐需求文档中的 TC-01 ~ TC-10，覆盖正常路径、澄清门控、
+675 项测试对齐需求文档中的 TC-01 ~ TC-10，覆盖正常路径、澄清门控、
 多工具协作、工具失败降级、不可行约束、依赖 DAG 无环、跨领域泛化、提示注入防御。
 
 ---
@@ -271,7 +273,7 @@ uv run pytest -v
 - `estimate_route` 基于直线距离折算，是量级估算，不是导航结果。
 - `fetch_webpage` 只抓正文文本，不执行 JS，动态渲染站点可能抓不到内容。
 - 汇率优先在线，失败时降级到内置离线表并显式标注。
-- 景点库是离线种子数据（282 条 / 42 个城市），价格为量级参考，不代表实时票价。
+- 景点库是离线种子数据（6,103 条 / 305 个城市），价格为量级参考，不代表实时票价。
   详见上方「重建景点库」。
 
 ## 安全约定
@@ -312,7 +314,7 @@ uv run pytest -v
 
 ```
 uv run pytest
-193 passed in 59.43s     # 通过率 100%
+675 passed                # 通过率 100%
 ```
 
 其中包含两条**密钥泄漏防护**测试：`.env.example` 只允许放占位符，

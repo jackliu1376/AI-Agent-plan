@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ClarificationCard } from './components/ClarificationCard'
 import { Composer } from './components/Composer'
 import { ConfirmDialog } from './components/ConfirmDialog'
-import { EvidenceList, StageLine } from './components/EvidenceList'
+import { EvidenceList, StageLine, buildProbes } from './components/EvidenceList'
 import { HeroCollage } from './components/HeroCollage'
 import { PlanView } from './components/PlanView'
 import { Rail } from './components/Rail'
 import { ShareButton } from './components/ShareButton'
+import { fmtWhen } from './lib/formatTime'
 import { TaskInput } from './components/TaskInput'
 import { useBackendHealth } from './hooks/useBackendHealth'
 import { NARROW_QUERY, useMediaQuery } from './hooks/useMediaQuery'
@@ -37,6 +38,30 @@ function saveCollapsed(collapsed: boolean): void {
   }
 }
 
+/**
+ * 首次生成时的骨架屏。
+ *
+ * 只在「正在跑且还没有任何计划」时出现 —— 那时页面本来是空的，
+ * 骨架比一句「生成中」更能说明「马上会有东西」。
+ *
+ * 修订时**不显示**：旧计划还在，盖掉它用户就没法对着改了。
+ */
+function PlanSkeleton() {
+  return (
+    <div className="plan-skeleton" aria-hidden="true">
+      <div className="ps-bar" style={{ height: 15, width: '68%', marginBottom: 10 }} />
+      <div className="ps-bar" style={{ height: 11, width: '42%', marginBottom: 30 }} />
+      <div className="ps-bar" style={{ height: 11, width: '22%', marginBottom: 14 }} />
+      <div className="ps-bar" style={{ height: 11, width: '92%', marginBottom: 9 }} />
+      <div className="ps-bar" style={{ height: 11, width: '74%', marginBottom: 9 }} />
+      <div className="ps-bar" style={{ height: 11, width: '85%', marginBottom: 30 }} />
+      <div className="ps-bar" style={{ height: 11, width: '26%', marginBottom: 14 }} />
+      <div className="ps-bar" style={{ height: 11, width: '88%', marginBottom: 9 }} />
+      <div className="ps-bar" style={{ height: 11, width: '66%' }} />
+    </div>
+  )
+}
+
 export default function App() {
   const {
     state,
@@ -50,6 +75,7 @@ export default function App() {
     dismissError,
     refreshHistory,
     reset,
+    notify,
   } = usePlanningSession()
   const { phase, events, clarification, result, error, history, sessionId, task } = state
   const { revisions, activeSeq, pendingFeedback, leaving } = state
@@ -125,6 +151,30 @@ export default function App() {
   }, [])
 
   /**
+   * 复制 Markdown。**必须处理失败**。
+   *
+   * `navigator.clipboard` 只在安全上下文（https / localhost）可用，
+   * 非 https 部署时它是 `undefined`；即便存在，用户拒绝权限或浏览器
+   * 限制也会 reject。原来写成 `void navigator.clipboard.writeText(...)`，
+   * 失败时**完全静默** —— 用户以为复制成功了，粘出来却是旧内容，
+   * 而且没有任何线索指向「复制失败」。
+   */
+  const copyMarkdown = useCallback(async () => {
+    if (result === null) return
+    try {
+      if (navigator.clipboard?.writeText === undefined) {
+        throw new Error('浏览器不支持剪贴板 API（通常因为页面不是 https）')
+      }
+      await navigator.clipboard.writeText(result.markdown)
+      notify('已复制到剪贴板。')
+    } catch (err) {
+      notify(
+        `复制失败：${err instanceof Error ? err.message : '未知原因'}。请手动选中复制。`,
+      )
+    }
+  }, [result, notify])
+
+  /**
    * 鼠标视差：把指针在光区内的位置映射成 -1~1，写进 --px / --py，
    * 由 .stage 的 transform 读走（见 styles.css）。
    *
@@ -177,6 +227,13 @@ export default function App() {
    *
    * 不缩的话，系统缩放到 125%（视口逻辑高度变小）时首页会顶出一条纵向滚动条 ——
    * 首页是入口，一进来就看见滚动条很掉价。
+   *
+   * **依赖必须包含 `heroGone`。** 光区挂载的条件是 `!heroGone`，而 `heroGone`
+   * 是在另一个 effect 里复位的。从历史会话回首页时，`phase` 先变成 `idle`
+   * 而 `heroGone` 还是 `true` —— 这次 effect 跑了个空（`heroRef.current` 是
+   * null）；等 `heroGone` 复位、光区真正挂载时 `phase` 已经不再变化，effect
+   * 不会重跑，于是 `--fit-h` 没被设置、滚动条又冒出来。
+   * 表现就是「刷新后正常，走一趟历史再回来就不正常」。
    */
   useEffect(() => {
     const zone = heroRef.current
@@ -230,11 +287,56 @@ export default function App() {
       window.removeEventListener('resize', schedule)
       if (raf !== 0) cancelAnimationFrame(raf)
     }
-  }, [phase])
+  }, [phase, heroGone])
 
   const busy = phase === 'running' || phase === 'awaiting'
   const started = phase !== 'idle'
   const hasPlan = result !== null && result.plan !== null
+
+  /**
+   * 页头副行。按阶段给不同信息 —— 这一行是「我在看哪个任务」的答案。
+   *
+   * - 跑着的时候：进行中 / 修订中 + 已查证几项（给进度感）
+   * - 有计划之后：时间 · 版本数 · 步数（给定位和规模感）
+   *
+   * 时间从 `history` 里按 sessionId 反查 —— `state` 本身不带会话创建时间。
+   * 查不到就不显示（比如刚跑完、history 还没刷新），不影响其余信息。
+   */
+  const echoTs =
+    sessionId !== null ? (history.find((h) => h.sessionId === sessionId)?.ts ?? null) : null
+
+  // ---- 从事件流派生的值：统一在这里算一次，向下传 ----
+  //
+  // 流式期间每来一个事件都会重渲染整棵树。之前 `buildProbes` 被
+  // StageLine 与 EvidenceList 各算一遍，`events.filter` 再扫一遍 ——
+  // 一次渲染遍历三趟，而它们要的都是同一份结果。
+  // useMemo 依赖 events（每次事件确实会变，这是必要的重算），
+  // 但至少从「三趟」降到「一趟」。
+  const probes = useMemo(() => buildProbes(events), [events])
+  const verifiedCount = useMemo(
+    () => events.filter((e) => e.type === 'tool_result').length,
+    [events],
+  )
+  const hasTurnStarted = useMemo(
+    () => events.some((e) => e.type === 'turn_started'),
+    [events],
+  )
+  const eventCount = events.length
+
+  const echoSub = (() => {
+    if (busy) {
+      const label = pendingFeedback === null ? '进行中' : '修订中'
+      return verifiedCount > 0 ? `${label} · 已查证 ${verifiedCount} 项` : label
+    }
+    if (result === null) return ''
+    return [
+      echoTs !== null ? fmtWhen(echoTs) : null,
+      revisions.length > 0 ? `${revisions.length} 版` : null,
+      result.step_count > 0 ? `${result.step_count} 步` : null,
+    ]
+      .filter((x): x is string => x !== null)
+      .join(' · ')
+  })()
   const offline = healthStatus === 'offline'
   const exiting = leaving !== 'none' && !heroGone
 
@@ -311,15 +413,12 @@ export default function App() {
         <div className={`main-body${started ? ' with-top' : ''}`}>
           {started && (
             <div className="echo">
-              <div className="echo-task">{task}</div>
-              {busy && (
-                <div className="echo-meta">
-                  <span className="tag">
-                    <span className="spinner" aria-hidden="true" />
-                    {pendingFeedback === null ? '进行中' : '修订中'}
-                  </span>
-                </div>
-              )}
+              {/* 任务名 + 副行包成一体，这样右侧的分享按钮对齐的是**整块**，
+                  而不是只对齐第一行 —— 否则按钮会悬在两行之间的高度上。 */}
+              <div className="echo-body">
+                <div className="echo-task">{task}</div>
+                {echoSub !== '' && <div className="echo-when">{echoSub}</div>}
+              </div>
               {/* 分享入口放这一行的右侧（`margin-left: auto`）——
                   它在页面右上角，和用户扫一眼找「分享」的位置一致。
                   只在有计划后出现：没东西可分享时摆个按钮是噪音。 */}
@@ -327,7 +426,15 @@ export default function App() {
             </div>
           )}
 
-          {started && busy && <StageLine events={events} busy={busy} />}
+          {started && busy && (
+            <StageLine
+              probes={probes}
+              eventCount={eventCount}
+              turned={hasTurnStarted}
+              busy={busy}
+              revising={pendingFeedback !== null}
+            />
+          )}
 
           {error !== null && (
             <div className="note danger" role="alert">
@@ -358,18 +465,25 @@ export default function App() {
 
           {clarification !== null && <ClarificationCard data={clarification} onSubmit={answer} />}
 
-          {started && <EvidenceList events={events} busy={busy} />}
+          {started && <EvidenceList probes={probes} busy={busy} />}
 
+          {/* 首次生成：还没有任何计划，用骨架占位 */}
+          {started && busy && !hasPlan && <PlanSkeleton />}
+
+          {/* 修订中把旧计划压暗 —— 保留可读，但一眼看出「这是旧的」。
+              busy 时 pointer-events 也被关掉（见 .plan-dimmed）。 */}
           {hasPlan && (
-            <PlanView
-              plan={result.plan!}
-              markdown={result.markdown}
-              stepCount={result.step_count}
-              seq={activeSeq}
-              revisionSummary={result.revision_summary}
-              historical={historical}
-              onJumpToComposer={showComposer ? jumpToComposer : undefined}
-            />
+            <div className={busy ? 'plan-dimmed' : undefined} aria-busy={busy || undefined}>
+              <PlanView
+                plan={result.plan!}
+                markdown={result.markdown}
+                stepCount={result.step_count}
+                seq={activeSeq}
+                revisionSummary={result.revision_summary}
+                historical={historical}
+                onJumpToComposer={showComposer ? jumpToComposer : undefined}
+              />
+            </div>
           )}
 
           {/* 模型没能产出合规 JSON 时，至少把自然语言回复展示出来
@@ -408,7 +522,7 @@ export default function App() {
                 <button
                   type="button"
                   className="btn primary"
-                  onClick={() => void navigator.clipboard.writeText(result.markdown)}
+                  onClick={() => void copyMarkdown()}
                 >
                   复制 Markdown
                 </button>

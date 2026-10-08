@@ -24,12 +24,18 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
 from common.envelope import ERR_NOT_FOUND, ToolResult
 from mcp_server.data.cities import lookup_city
-from mcp_server.data.seed import connect, data_verified_at, freshness_disclaimer
+from mcp_server.data.seed import (
+    connect,
+    covered_cities,
+    data_verified_at,
+    freshness_disclaimer,
+)
 from mcp_server.tools.base import register
 
 # 官方查询渠道：**刻意返回渠道类型而非具体网址**。
@@ -232,12 +238,25 @@ def query_attractions_db(params: AttractionsParams) -> ToolResult:
         # **不要在这里列全部城市名。** 扩到 250 城之后，`', '.join(covered)`
         # 会产出约 2000 字符的提示，白白吃掉模型的上下文 —— 而模型需要的只是
         # 「大概覆盖哪些地方 + 不在里面就如实说」。国家汇总就够了。
+        #
+        # **区分两种「没结果」**：城市压根没收录 vs 城市有但筛选条件太窄。
+        # 混在一起说会误导模型 —— 前者该换数据源，后者该放宽条件。
+        # （前车之鉴：高德的「覆盖不到」被写成了「没有交通方案」，把用户带偏。）
+        if params.city.strip() not in covered_cities():
+            reason = (
+                f"本地景点库**没有收录「{params.city}」**。"
+                "这是数据覆盖问题，不代表该城市没有景点，更不要据此编造景点与票价。"
+            )
+        else:
+            reason = (
+                f"「{params.city}」有数据，但**当前筛选条件筛空了**"
+                f"（tags={params.tags}, max_price={params.max_price}, "
+                f"kid_friendly_only={params.kid_friendly_only}）。可以放宽条件再查一次。"
+            )
         return ToolResult.failure(
             ERR_NOT_FOUND,
-            f"没有符合条件的景点（city={params.city}, tags={params.tags}, "
-            f"max_price={params.max_price}）。"
-            f"注意 max_price 比较的是**当地货币**数值。"
-            f"{_coverage_note()}"
+            f"{reason}\n"
+            f"当前库覆盖 {_coverage_note()}"
             "若目标城市不在其中，请如实告知用户「本地景点库无该城市数据」，"
             "不要凭记忆编造景点与票价。",
             source="local:attractions.db",

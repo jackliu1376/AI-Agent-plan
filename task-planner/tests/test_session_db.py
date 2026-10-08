@@ -16,7 +16,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -174,14 +177,15 @@ def test_mark_interrupted_only_touches_live_states(session_db: SessionDB) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_store_persists_on_status_change(session_db: SessionDB) -> None:
+async def test_store_persists_on_status_change(session_db: SessionDB) -> None:
     """状态跃迁就要落盘，不用等会话结束。"""
     store = SessionStore(db=session_db)
     session = store.create("成都 2 日游")
     assert session_db.load(session.id)["status"] == "pending"
 
     session.status = "running"
-    session._persist()  # noqa: SLF001 - 直接驱动，省去跑一遍事件循环
+    # _persist 现在是协程（内部走 asyncio.to_thread，避免阻塞事件循环）
+    await session._persist()  # noqa: SLF001 - 直接驱动，省去跑一遍 set_status
     assert session_db.load(session.id)["status"] == "running"
 
 
@@ -191,6 +195,80 @@ async def test_set_status_persists(session_db: SessionDB) -> None:
     await session.set_status("running")
     await session.set_status("done")
     assert session_db.load(session.id)["status"] == "done"
+
+
+def test_concurrent_saves_all_succeed(tmp_path: Path) -> None:
+    """并发落盘必须**全部**成功，不能静默丢。
+
+    这条断言同时拦两种回归：
+
+    ① **`_ensure_schema` 缺锁。** 多线程同时跑 DDL 时
+       ``ALTER TABLE ADD COLUMN`` 会撞车，而异常被 save() 的宽 except 吞掉 ——
+       表现为「那一次写入静默失败」，用户只看到历史偶尔少一条。
+
+    ② **有人加回 `PRAGMA journal_mode=WAL`。** 直觉上 WAL 能让读写互不阻塞，
+       但 WAL 的前提是**长连接**，而本类的 ``_connect()`` 是用完即关：
+       关闭时的 checkpoint 与并发打开撞车。实测（Windows，8 线程）
+       WAL 只成功 1/8，其余报 "attempt to write a readonly database"。
+
+    **所以这里断言的是「并发写入不丢」，而不是某种 journal_mode** ——
+    将来若改成连接池 + WAL 且真能全过，这条测试照样该绿。
+    """
+    db = SessionDB(tmp_path / "concurrent.db")
+
+    def _save(i: int) -> bool:
+        session = Session(id=f"id{i:06d}", task=f"任务{i}")
+        session._on_change = lambda: None
+        return db.save(session)
+
+    n = 8
+    results: list[bool] = []
+    lock = threading.Lock()
+
+    def worker(i: int) -> None:
+        ok = _save(i)
+        with lock:
+            results.append(ok)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert results.count(True) == n, f"并发写入只成功 {results.count(True)}/{n}"
+    assert db.count() == n
+
+
+async def test_persist_does_not_block_event_loop() -> None:
+    """落盘不能阻塞事件循环。
+
+    `SessionDB.save()` 是同步的（JSON 序列化 + INSERT + commit）。
+    以前它在 `set_status()` 里直接调用，跑在事件循环线程上 ——
+    单会话几毫秒可以忽略，但多会话并发时会累积成可感知的卡顿，
+    还会把 15 秒一次的 SSE 心跳往后推。
+
+    断言方式：落盘期间另起一个 ticker 协程，看它还能不能跑。
+    被阻塞的话 ticker 一次都跑不到（阈值取 3，留足机器慢的余地）。
+    """
+    session = Session(id="x" * 8, task="t")
+    session._on_change = lambda: time.sleep(0.3)
+
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    task = asyncio.create_task(ticker())
+    try:
+        await session._persist()
+    finally:
+        task.cancel()
+
+    assert ticks >= 3, f"落盘期间事件循环只跑了 {ticks} 个 tick —— 说明被阻塞了"
 
 
 def test_store_evict_keeps_disk_row(session_db: SessionDB) -> None:
@@ -214,14 +292,14 @@ def test_store_evict_keeps_disk_row(session_db: SessionDB) -> None:
     assert store.size == 2
 
 
-def test_store_get_hydrates_from_disk(session_db: SessionDB) -> None:
+async def test_store_get_hydrates_from_disk(session_db: SessionDB) -> None:
     """模拟重启：新 store 共用同一个库，旧会话照样打得开。"""
     writer = SessionStore(db=session_db)
     session = writer.create("毕业论文帮我做")
     session.status = "done"
     session.result = {"ok": True, "step_count": 3}
     session.events = [{"type": "plan_ready", "data": {"ok": True}}]
-    session._persist()  # noqa: SLF001
+    await session._persist()  # noqa: SLF001
 
     reader = SessionStore(db=session_db)  # 全新的内存表，等价于重启
     revived = reader.get(session.id)
@@ -238,7 +316,7 @@ def test_store_drop_removes_disk_row(session_db: SessionDB) -> None:
     assert session_db.load(session.id) is None
 
 
-def test_dropped_session_cannot_be_resurrected(session_db: SessionDB) -> None:
+async def test_dropped_session_cannot_be_resurrected(session_db: SessionDB) -> None:
     """回归：取消 = 先 drop 再 cancel 任务，而任务随后还会 set_status("failed")。
 
     没拦住的话，刚删掉的行会被这一下写回磁盘 —— 用户删了又冒出来。
@@ -247,7 +325,7 @@ def test_dropped_session_cannot_be_resurrected(session_db: SessionDB) -> None:
     session = store.create("任务")
     store.drop(session.id)
 
-    session._persist()  # noqa: SLF001 - 模拟被取消的任务收尾时的那次写盘
+    await session._persist()  # noqa: SLF001 - 模拟被取消的任务收尾时的那次写盘
     assert session_db.load(session.id) is None, "已删除的会话被写回来了"
 
 

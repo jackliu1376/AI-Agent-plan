@@ -437,7 +437,11 @@ def test_weather_out_of_range_date_reports_allowed_window(
         {"city": "纽约", "start_date": "2026-10-15", "end_date": "2026-10-16"},
     )
     assert not result.ok
-    assert result.error.code == "BAD_ARGS", "确定性参数问题不该被当成可重试的上游故障"
+    # OUT_OF_RANGE 而不是 BAD_ARGS：日期格式没问题，是取值超出了预报覆盖范围。
+    # 两者都不可重试，但语义不同 —— BAD_ARGS 的潜台词是「你传错了」，
+    # 模型看到会去改格式、重试同一个日期；这个码的潜台词是
+    # 「换成区间内的日期，或者改用气候经验值」。
+    assert result.error.code == "OUT_OF_RANGE", "确定性参数问题不该被当成可重试的上游故障"
     assert "2026-06-28" in result.error.message
     assert "2026-10-14" in result.error.message
     assert "非实时预报" in result.error.message

@@ -50,6 +50,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -138,6 +139,11 @@ class SessionDB:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or db_path()
         self._ready = False
+        # 保护 _ensure_schema 的懒初始化。用 threading.Lock 而不是 asyncio.Lock：
+        # 这个类的调用来自多个线程（FastAPI 的线程池 + asyncio.to_thread）。
+        # 没有它的话两个线程可能同时跑 DDL，`ALTER TABLE ADD COLUMN` 撞车时
+        # 异常会被下面的宽 except 吞掉 —— 表现为「那一次写入静默失败」。
+        self._lock = threading.Lock()
 
     @property
     def path(self) -> Path:
@@ -164,12 +170,33 @@ class SessionDB:
         """懒建表 + 补列。只做一次，避免每次读写都重放一遍 DDL。"""
         if self._ready:
             return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.executescript(SCHEMA)
-            self._migrate(conn)
-            conn.commit()
-        self._ready = True
+        with self._lock:
+            # 双检：等锁期间别的线程可能已经建好了
+            if self._ready:
+                return
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._connect() as conn:
+                conn.executescript(SCHEMA)
+                self._migrate(conn)
+                conn.commit()
+            self._ready = True
+
+    # 关于 `PRAGMA journal_mode=WAL`：**实测在本项目里有害，不要加。**
+    #
+    # 直觉上 WAL 能让读写互不阻塞，看起来正合适。但 WAL 的前提是
+    # **长连接**，而本类的 `_connect()` 是「每次操作开一个连接、用完即关」。
+    # 连接关闭时若它是最后一个，SQLite 会做 checkpoint 并删除 -wal/-shm，
+    # 此时另一个线程正好打开连接就会拿到 SQLITE_READONLY。
+    #
+    # 实测（Windows，8 线程并发首次写入）：
+    #   · 默认 DELETE 模式（预建表）  8/8 成功
+    #   · WAL 模式                    1/8 成功 —— 7 次报
+    #     "attempt to write a readonly database"
+    # 更糟的是 save() 吞异常返回 False，**失败是静默的**：
+    # 用户看到的是「历史记录偶尔丢一条」。
+    #
+    # 串行写入两种模式都正常，所以这个问题只在并发下暴露 ——
+    # 而 `_persist` 走 `asyncio.to_thread` 之后并发是常态。
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
         """给已存在的表补上后加的列。
@@ -223,7 +250,16 @@ class SessionDB:
             return False
 
     def _prune(self, conn: sqlite3.Connection) -> None:
-        """只保留最近的 ``MAX_ROWS`` 条。"""
+        """只保留最近的 ``MAX_ROWS`` 条。
+
+        先 COUNT 再决定要不要删：原来无条件跑那条
+        `DELETE ... WHERE id IN (SELECT ... ORDER BY ... OFFSET 500)`，
+        等于**每次写入都做一次全表排序 + 子查询**，而其中 99.8% 的调用
+        表根本没满、纯属白做。COUNT 走索引，代价可以忽略。
+        """
+        row = conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()
+        if row is None or int(row["n"]) <= MAX_ROWS:
+            return
         conn.execute(
             "DELETE FROM sessions WHERE id IN ("
             "  SELECT id FROM sessions ORDER BY created_at DESC LIMIT -1 OFFSET ?"

@@ -14,6 +14,15 @@
 import type { PlanEvent } from '../api/types'
 import { labelOf } from '../lib/toolLabels'
 
+/**
+ * 澄清工具。
+ *
+ * 它不是「查证」——调用它会挂起整轮运行、等用户回话。
+ * 列表里的措辞要区别对待：显示「正在查询…」会让人以为工具卡住了，
+ * 而实际上**球在用户这边**。
+ */
+const CLARIFY_TOOL = 'ask_user_clarification'
+
 const ERROR_LABELS: Record<string, string> = {
   NOT_FOUND: '没有数据',
   BAD_ARGS: '参数不合法',
@@ -172,7 +181,11 @@ function ProbeRows({ probes }: { probes: Probe[] }) {
                   <em>{probe.summary.length > 0 ? probe.summary : '未取到数据'}</em>
                 )
               ) : (
-                probe.summary || <em>正在查询…</em>
+                probe.summary || (
+                  <em>
+                    {probe.tool === CLARIFY_TOOL ? '等待你的回答…' : '正在查询…'}
+                  </em>
+                )
               )}
             </span>
             <span className={`probe-st ${probe.status === 'running' ? 'run' : probe.status}`}>
@@ -193,6 +206,14 @@ export function EvidenceList({ probes, busy }: Props) {
   const headline =
     failed > 0 ? `查证了 ${probes.length} 项（${failed} 项未取到）` : `查证了 ${probes.length} 项`
 
+  // 跑着的时候的标题。
+  //
+  // 原来固定写「已查证 N 项」，N 只数已完成的 —— 所以刚提交、一个都还没回来时
+  // 会显示「已查证 0 项」，读起来像出错了。改成按情况说话：
+  // 在等用户回答 → 说「等待你的回答」；还在跑 → 说「正在查证…」。
+  const waiting = probes.some((p) => p.status === 'running' && p.tool === CLARIFY_TOOL)
+  const runningHead = waiting ? '等待你的回答' : done === 0 ? '正在查证…' : `已查证 ${done} 项`
+
   // 跑完后计划才是主角 —— 把查证过程折起来，但保留可追溯性。
   // 跑的过程中展开，因为这时候它是用户唯一能看到的实质进展。
   if (!busy) {
@@ -211,7 +232,7 @@ export function EvidenceList({ probes, busy }: Props) {
           <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.4" />
           <path d="M6 3.4v3M6 8.2v.1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
         </svg>
-        已查证 {done} 项
+        {runningHead}
       </div>
       <ProbeRows probes={probes} />
     </div>

@@ -52,9 +52,10 @@ import os
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any
 
 from web.session import session_ok
 
@@ -216,7 +217,7 @@ class SessionDB:
 
     # -- 写 ---------------------------------------------------------------
 
-    def save(self, session: "Session") -> bool:
+    def save(self, session: Session) -> bool:
         """整条 upsert。返回是否成功。"""
         try:
             self._ensure_schema()
@@ -246,7 +247,7 @@ class SessionDB:
                 conn.commit()
                 self._prune(conn)
             return True
-        except Exception:  # noqa: BLE001 - 落盘失败不该影响正在跑的规划
+        except Exception:
             return False
 
     def _prune(self, conn: sqlite3.Connection) -> None:
@@ -276,7 +277,7 @@ class SessionDB:
                 cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
                 conn.commit()
                 return cursor.rowcount > 0
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
     def mark_interrupted(self, reason: str) -> int:
@@ -296,7 +297,7 @@ class SessionDB:
                 )
                 conn.commit()
                 return cursor.rowcount
-        except Exception:  # noqa: BLE001
+        except Exception:
             return 0
 
     def clear(self) -> int:
@@ -307,7 +308,7 @@ class SessionDB:
                 cursor = conn.execute("DELETE FROM sessions")
                 conn.commit()
                 return cursor.rowcount
-        except Exception:  # noqa: BLE001
+        except Exception:
             return 0
 
     # -- 读 ---------------------------------------------------------------
@@ -321,7 +322,7 @@ class SessionDB:
                     "SELECT * FROM sessions WHERE id = ?", (session_id,)
                 ).fetchone()
             return _row_to_record(row) if row is not None else None
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     def list(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -340,7 +341,7 @@ class SessionDB:
                     (size,),
                 ).fetchall()
             return [_row_to_summary(row) for row in rows]
-        except Exception:  # noqa: BLE001
+        except Exception:
             return []
 
     def count(self) -> int:
@@ -349,7 +350,7 @@ class SessionDB:
             with self._connect() as conn:
                 row = conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()
             return int(row["n"]) if row is not None else 0
-        except Exception:  # noqa: BLE001
+        except Exception:
             return 0
 
 
@@ -358,7 +359,28 @@ class SessionDB:
 # ---------------------------------------------------------------------------
 
 
-def _snapshot(session: "Session") -> dict[str, Any]:
+def _strip_poi_coordinates(value: Any) -> Any:
+    """递归删掉 ``pois`` 键。
+
+    **为什么必须在落盘前删**
+    ------------------------
+    高德服务协议 3.5 条禁止存储 / 缓存 POI 数据。景点坐标是 POI 的一部分，
+    写进 ``sessions.db`` 就等于长期留存 —— 这是明确不允许的。
+
+    删除只发生在**序列化这一步**：内存里的 ``session.result`` / ``session.events``
+    原封不动，所以本次运行的地图照常显示。代价是服务重启后打开旧会话，
+    地图是空的 —— 这是刻意的取舍，不是 bug。
+
+    覆盖两个位置：``result.pois`` 与 ``plan_ready`` 事件里的 ``data.pois``。
+    """
+    if isinstance(value, dict):
+        return {k: _strip_poi_coordinates(v) for k, v in value.items() if k != "pois"}
+    if isinstance(value, list):
+        return [_strip_poi_coordinates(item) for item in value]
+    return value
+
+
+def _snapshot(session: Session) -> dict[str, Any]:
     """把 Session 压成一行。``default=str`` 兜住任何非 JSON 类型。"""
     return {
         "id": session.id,
@@ -366,9 +388,14 @@ def _snapshot(session: "Session") -> dict[str, Any]:
         "status": session.status,
         "created_at": session.created_wall,
         "updated_at": time.time(),
-        "events": json.dumps(session.events, ensure_ascii=False, default=str),
+        # 坐标不落盘（见 _strip_poi_coordinates）
+        "events": json.dumps(
+            _strip_poi_coordinates(session.events), ensure_ascii=False, default=str
+        ),
         "result": (
-            json.dumps(session.result, ensure_ascii=False, default=str)
+            json.dumps(
+                _strip_poi_coordinates(session.result), ensure_ascii=False, default=str
+            )
             if session.result is not None
             else None
         ),
@@ -380,14 +407,17 @@ def _snapshot(session: "Session") -> dict[str, Any]:
         ),
         "ok": _ok_flag(session),
         "revisions": (
-            json.dumps(session.revisions, ensure_ascii=False, default=str)
+            # 每一版的 result 里同样带 pois，一并剥掉
+            json.dumps(
+                _strip_poi_coordinates(session.revisions), ensure_ascii=False, default=str
+            )
             if session.revisions
             else None
         ),
     }
 
 
-def _ok_flag(session: "Session") -> int | None:
+def _ok_flag(session: Session) -> int | None:
     """把「这次规划成不成功」压成一个可索引的整数列。
 
     为什么要冗余这一列：列表接口只想显示一个状态点，

@@ -318,6 +318,30 @@ def create_app(
             ],
         }
 
+    @app.get("/api/map/config", summary="地图渲染配置")
+    async def map_config() -> dict[str, Any]:
+        """下发高德 JS API 的浏览器端凭据。
+
+        **为什么这个 key 可以下发，而 ``DEEPSEEK_API_KEY`` 不行**
+        --------------------------------------------------------
+        高德 JS API 的 key 设计上就是给浏览器用的 —— 它被写进 script URL，
+        任何人打开页面都能看到，靠「域名白名单 + 配额」而不是保密来防护。
+        LLM 的 key 则是纯服务端凭据，泄露即被盗刷，两者性质完全不同。
+
+        真正需要留意的是 ``security_code``：高德官方建议用服务端代理转发
+        来避免它出现在前端。本项目是**本地单机服务**（默认只听 127.0.0.1），
+        直接下发可以接受；如果要把这个服务暴露到公网，应改为代理方案 ——
+        否则任何人拿到这对凭据都能消耗你的配额。
+
+        未配置时 ``enabled=false``，前端降级为自绘示意图而不是白屏。
+        """
+        key = os.getenv("AMAP_JS_KEY", "").strip()
+        return {
+            "enabled": bool(key),
+            "key": key,
+            "security_code": os.getenv("AMAP_JS_SECURITY_CODE", "").strip(),
+        }
+
     # -- 会话 -------------------------------------------------------------
 
     @app.post("/api/sessions", response_model=CreateSessionResponse, summary="提交任务")
@@ -376,7 +400,9 @@ def create_app(
             error=session.error,
             event_count=len(session.events),
             events=session.events,
-            revisions=session.revision_summaries(),
+            # 显式构造而不是直接塞 dict：pydantic 运行时会转换，
+            # 但类型检查器不知道，改完这里两边就都对了
+            revisions=[RevisionSummary(**item) for item in session.revision_summaries()],
         )
 
     @app.get(
@@ -576,7 +602,7 @@ async def _janitor_loop(app: FastAPI, interval: float) -> None:
                     app.state.tasks.pop(session_id, None)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - 清理失败不该拖垮服务
+        except Exception:
             pass
 
 
@@ -666,7 +692,7 @@ async def _close_run(llm: Any, orch: Orchestrator | None) -> None:
                 result = closer()
                 if inspect.isawaitable(result):
                     await result
-            except Exception:  # noqa: BLE001 - 收尾失败不该影响主流程
+            except Exception:
                 pass
             break  # 一个对象只关一次
 
@@ -731,7 +757,7 @@ async def _drive(
     except asyncio.CancelledError:
         await session.set_status("failed")
         raise
-    except Exception as exc:  # noqa: BLE001 - 兜底：驱动层自身出错也要反映到状态
+    except Exception as exc:
         session.error = f"{type(exc).__name__}: {exc}"
         await session.emit(Event("error", {"message": session.error}))
         await session.set_status("failed")

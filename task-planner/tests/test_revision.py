@@ -26,7 +26,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from agent.config import Settings
-from agent.demo import ScriptedLLM
 from agent.loop import Orchestrator, revision_instruction, wrap_user_input
 from agent.schema import Plan, extract_extra_str, parse_plan
 from tests.conftest import make_plan, plan_turn, text_turn, tool_turn
@@ -57,7 +56,7 @@ class RecordingLLM:
         self._script = list(script)
         self.calls: list[list[dict[str, Any]]] = []
 
-    def chat(self, messages, tools=None):  # noqa: ANN001
+    def chat(self, messages, tools=None):
         self.calls.append([dict(m) for m in messages])
         if not self._script:
             return text_turn("剧本用完了")

@@ -7,8 +7,9 @@
  */
 
 import { memo, useState } from 'react'
-import type { Plan, Step } from '../api/types'
+import type { Plan, PoiMarker, Step } from '../api/types'
 import { humanizeSource } from '../lib/toolLabels'
+import { TripMap } from './TripMap'
 
 const MAX_SOURCE_CHARS = 34
 
@@ -67,6 +68,8 @@ interface Props {
   revisionSummary?: string
   /** 正在看的是不是历史版本 */
   historical?: boolean
+  /** 景点坐标。非旅游任务、或旧记录里没有这份数据时为空数组（地图不渲染）。 */
+  pois?: PoiMarker[]
   /** 点「去下面回答」时把焦点送到输入框 */
   onJumpToComposer?: () => void
 }
@@ -88,6 +91,7 @@ const PlanViewBase = memo(function PlanView({
   seq = 0,
   revisionSummary = '',
   historical = false,
+  pois = [],
   onJumpToComposer,
 }: Props) {
   const [showRaw, setShowRaw] = useState(false)
@@ -161,6 +165,11 @@ const PlanViewBase = memo(function PlanView({
           </div>
         </div>
       )}
+
+      {/* 景点地图。放在时效声明之后、阶段步骤之前 ——
+          上面两条 note 是「元信息」，地图是「行程的空间视图」，
+          属于正文的第一块；再往下才是逐阶段的执行细节。 */}
+      <TripMap pois={pois} />
 
       {plan.phases.map((phase, index) => (
         <section className="phase" key={`${phase.name}-${index}`}>

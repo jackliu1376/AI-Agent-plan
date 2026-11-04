@@ -30,7 +30,7 @@ class ClarifyParams(BaseModel):
 
     @field_validator("options", mode="before")
     @classmethod
-    def _coerce(cls, v):  # noqa: ANN001
+    def _coerce(cls, v):
         if v is None:
             return []
         if isinstance(v, str):

@@ -16,11 +16,12 @@ import os
 import sys
 import time
 import traceback
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
@@ -146,7 +147,7 @@ class ToolSpec:
             return ""
         try:
             return str(self.summarize(data)).strip()
-        except Exception:  # noqa: BLE001 - 摘要失败不该影响主流程
+        except Exception:
             return ""
 
     def openai_schema(self) -> dict[str, Any]:
@@ -248,7 +249,7 @@ def invoke(name: str, args: dict[str, Any] | None = None, *, retries: int | None
             result.meta.latency_ms = _latency()
             result.meta.attempts = attempt
             return result
-        except Exception as exc:  # noqa: BLE001 - 统一兜底
+        except Exception as exc:
             if _is_timeout(exc):
                 code, message = ERR_UPSTREAM_TIMEOUT, f"上游超时: {exc}"
             else:

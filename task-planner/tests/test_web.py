@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -48,7 +48,7 @@ class SlowLLM:
         self._inner = inner
         self._delay = delay
 
-    def chat(self, messages, tools=None):  # noqa: ANN001
+    def chat(self, messages, tools=None):
         time.sleep(self._delay)
         return self._inner.chat(messages, tools=tools)
 
@@ -221,7 +221,7 @@ async def test_late_subscriber_gets_replay(make_app, client_factory) -> None:
         await asyncio.sleep(0.02)
 
     events = await collect_sse(client, f"/api/sessions/{sid}/events", stop_at={"plan_ready"})
-    assert [e["type"] for e in events][0] == "run_started"
+    assert next(e["type"] for e in events) == "run_started"
     assert events[-1]["type"] == "plan_ready"
 
 
@@ -360,7 +360,7 @@ async def test_llm_failure_becomes_failed_status(make_app, client_factory) -> No
     """LLM 抛异常必须变成会话状态，不能让后台任务静默死掉。"""
 
     class ExplodingLLM:
-        def chat(self, messages, tools=None):  # noqa: ANN001
+        def chat(self, messages, tools=None):
             raise RuntimeError("上游炸了")
 
     client = client_factory(make_app(normal_script, llm_wrapper=lambda _: ExplodingLLM()))
@@ -512,7 +512,9 @@ def test_client_key_falls_back_when_no_client() -> None:
     from web.app import _client_key
 
     class _Req:
-        headers: dict[str, str] = {}
+        # ClassVar：这里要的是一个共享的空 dict 当桩，不是每个实例各持一份，
+        # 所以不用 field(default_factory=...)
+        headers: ClassVar[dict[str, str]] = {}
         client = None
 
     assert _client_key(_Req(), trust_proxy=False) == "unknown"
@@ -561,7 +563,7 @@ async def test_web_failed_run_is_also_logged(
     monkeypatch.setenv("RUN_LOG_PATH", str(run_log_path))
 
     class ExplodingLLM:
-        def chat(self, messages, tools=None):  # noqa: ANN001
+        def chat(self, messages, tools=None):
             raise RuntimeError("上游炸了")
 
     client = client_factory(make_app(normal_script, llm_wrapper=lambda _: ExplodingLLM()))

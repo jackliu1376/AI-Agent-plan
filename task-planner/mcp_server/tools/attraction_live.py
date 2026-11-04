@@ -44,6 +44,7 @@ Google Places 无此字段，Wikidata 无此属性。所以本工具**不假装�
 
 from __future__ import annotations
 
+import contextlib
 import re
 from typing import Any
 
@@ -174,6 +175,27 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 # ---------------------------------------------------------------------------
 
 
+def parse_location(raw: str) -> dict[str, float] | None:
+    """解析高德的 ``location`` 字段（``"经度,纬度"``）。
+
+    坐标是 **GCJ-02**（火星坐标系），不是 WGS-84。前端用高德 JS API 渲染时
+    必须原样使用、**不能做任何偏移校正** —— 转成 WGS-84 反而会错位几百米。
+    """
+    if not raw or "," not in raw:
+        return None
+    lon_s, _, lat_s = raw.partition(",")
+    try:
+        lon, lat = float(lon_s), float(lat_s)
+    except ValueError:
+        return None
+    # 0,0 是高德对「没有坐标」的占位值，不是真的在几内亚湾
+    if lon == 0.0 and lat == 0.0:
+        return None
+    if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
+        return None
+    return {"lon": round(lon, 6), "lat": round(lat, 6)}
+
+
 def parse_poi(poi: dict[str, Any]) -> dict[str, Any]:
     """把一条高德 POI 压成我们关心的字段。"""
     biz = poi.get("business") or {}
@@ -183,11 +205,12 @@ def parse_poi(poi: dict[str, Any]) -> dict[str, Any]:
         "address": poi.get("address") or "",
         "type": poi.get("type") or "",
     }
+    location = parse_location(str(poi.get("location") or ""))
+    if location is not None:
+        result["location"] = location
     if biz.get("rating"):
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             result["rating"] = float(biz["rating"])
-        except (TypeError, ValueError):
-            pass
     # 开放时间：这是本工具的主要价值，含季节性/闭馆日
     if biz.get("opentime_week"):
         result["opentime"] = str(biz["opentime_week"])
@@ -381,6 +404,9 @@ def query_attraction_realtime(params: AttractionLiveParams) -> ToolResult:
         "rating": data.get("rating"),
         "opentime": data.get("opentime"),
         "tel": data.get("tel"),
+        # GCJ-02 坐标。仅供**当次会话**在地图上标注，不落库
+        # （高德服务协议 3.5 条禁止存储/缓存）。
+        "location": data.get("location"),
         "note": (
             "开放时间与评分来自高德实时查询，可能有延迟。"
             "**票价不在本工具范围内**（高德覆盖率仅 5%）—— "

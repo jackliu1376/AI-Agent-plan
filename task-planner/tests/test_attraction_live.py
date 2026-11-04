@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from common.envelope import ERR_NOT_FOUND, ERR_UPSTREAM_ERROR
+from common.envelope import ERR_NOT_FOUND
 from mcp_server.tools.attraction_live import (
     MATCH_HIGH_ABOVE,
     MATCH_REJECT_BELOW,
@@ -252,7 +252,7 @@ def test_pick_best_match_accepts_exact() -> None:
 
 
 def test_pick_best_match_accepts_short_form() -> None:
-    best, score, reason = pick_best_match(
+    best, _score, reason = pick_best_match(
         REAL_POI_PAYLOAD["pois"], query_name="熊猫基地", query_city="成都"
     )
 

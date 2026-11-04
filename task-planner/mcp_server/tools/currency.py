@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
@@ -59,7 +61,7 @@ def _fetch_rates(base: str) -> tuple[dict[str, float] | None, str]:
         rates = payload.get("rates")
         if isinstance(rates, dict) and rates:
             return {k.upper(): float(v) for k, v in rates.items()}, "online"
-    except Exception as exc:  # noqa: BLE001 - 任何网络问题都降级，不抛出
+    except Exception as exc:
         return None, f"在线汇率不可用（{type(exc).__name__}）"
     return None, "在线汇率返回格式异常"
 

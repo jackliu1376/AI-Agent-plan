@@ -24,6 +24,7 @@ Windows 控制台默认是 GBK（cp936），**编码不了的字符会让 `print
 
 from __future__ import annotations
 
+import contextlib
 import sys
 
 
@@ -33,10 +34,15 @@ def ensure_safe_stdio() -> None:
     幂等，可以重复调用。在任何 print 之前调用即可。
     """
     for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(errors="replace")
-        except (AttributeError, ValueError, OSError):
-            # AttributeError：stdout 被替换成了非 TextIOWrapper（如 pytest 捕获）
-            # ValueError：流已分离
-            # 两种情况都不影响主流程，忽略
-            pass
+        # AttributeError：stdout 被替换成了非 TextIOWrapper（如 pytest 捕获）
+        # ValueError：流已分离
+        # OSError：底层句柄已关闭
+        # 三种都不影响主流程，忽略。
+        #
+        # 用 getattr 取方法而不是直接调用：TextIO 协议上没有 reconfigure，
+        # 直接调是 AttributeError 硬闯，getattr 既避开类型问题也更明确。
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        with contextlib.suppress(ValueError, OSError):
+            reconfigure(errors="replace")

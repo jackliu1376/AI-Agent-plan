@@ -41,7 +41,7 @@ def _read_bound_port(server: uvicorn.Server) -> int:
     raise RuntimeError("无法读取后端服务绑定的端口")
 
 
-def _start_server(app) -> tuple[uvicorn.Server, int]:  # noqa: ANN001
+def _start_server(app) -> tuple[uvicorn.Server, int]:
     """在后台线程启动服务，返回 (server, port)。"""
     config = uvicorn.Config(
         app,

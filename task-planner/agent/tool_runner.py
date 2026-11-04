@@ -13,10 +13,13 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from common.envelope import ERR_UPSTREAM_ERROR, ToolResult
 from mcp_server.tools.base import TOOL_REGISTRY, invoke, load_all_tools, openai_tool_schemas
+
+if TYPE_CHECKING:
+    from mcp import ClientSession
 
 
 class ToolRunner(Protocol):
@@ -59,11 +62,13 @@ class MCPToolRunner:
     def __init__(self, command: str | None = None, args: list[str] | None = None) -> None:
         self._command = command or sys.executable
         self._args = args or ["-m", "mcp_server.server"]
-        self._session = None
-        self._stdio_cm = None
-        self._session_cm = None
+        self._session: ClientSession | None = None
+        # 这两个是 mcp 的异步上下文管理器，类型由 SDK 内部定义且未导出，
+        # 用 Any 而不是猜一个协议 —— 猜错了比不标更误导
+        self._stdio_cm: Any = None
+        self._session_cm: Any = None
 
-    async def __aenter__(self) -> "MCPToolRunner":
+    async def __aenter__(self) -> MCPToolRunner:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
@@ -109,7 +114,7 @@ class MCPToolRunner:
         assert self._session is not None, "请先进入 async with 上下文"
         try:
             resp = await self._session.call_tool(name, args or {})
-        except Exception as exc:  # noqa: BLE001 - MCP 层异常统一兜底
+        except Exception as exc:
             return ToolResult.failure(
                 ERR_UPSTREAM_ERROR, f"MCP 调用失败: {type(exc).__name__}: {exc}", tool=name
             )
@@ -121,7 +126,7 @@ class MCPToolRunner:
         if text is not None:
             try:
                 return ToolResult.model_validate(json.loads(text))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return ToolResult.failure(
                     ERR_UPSTREAM_ERROR, f"MCP 返回内容无法解析: {exc}", tool=name
                 )

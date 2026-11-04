@@ -199,7 +199,7 @@ def _amap_name_search(client: httpx.Client, key: str, city: str) -> list[dict]:
                     "page_num": str(page), "output": "JSON",
                 })
                 payload = resp.json()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 print(f"      ! 按名搜第 {page} 页失败: {type(exc).__name__}")
                 payload = None
                 break
@@ -248,7 +248,7 @@ def _amap_page(
                 "page_num": str(page), "output": "JSON",
             })
             payload = resp.json()
-        except Exception as exc:  # noqa: BLE001 - 单页失败不该中断整城
+        except Exception as exc:
             print(f"      ! 第 {page} 页请求失败: {type(exc).__name__}")
             time.sleep(1.0)
             continue
@@ -484,7 +484,7 @@ def fetch_wikidata_city(city: str, client: httpx.Client, radius: int) -> list[di
         try:
             resp = client.post(WD_ENDPOINT, data={"query": query},
                                headers={"Accept": "application/sparql-results+json"})
-        except Exception as exc:  # noqa: BLE001 - 单批失败不该中断整城
+        except Exception as exc:
             print(f"      ! SPARQL 请求失败: {type(exc).__name__}")
             continue
 
@@ -590,9 +590,7 @@ def _admin_related(city: str, admin: str) -> bool:
     这里只在 admin 明确是**另一个城市**时才判为不相关。
     """
     # 城市名的前两个字相同通常就是同一个城市体系（如 东京 / 东京都）
-    if city[:2] and city[:2] in admin:
-        return True
-    return False
+    return bool(city[:2] and city[:2] in admin)
 
 
 # ---------------------------------------------------------------------------
@@ -648,8 +646,8 @@ def run_amap(cities: list[str], limit: int | None) -> dict:
             except RuntimeError as exc:
                 print(f"  [{i}/{len(todo)}] {city}: {exc} —— 提前结束")
                 save_cache("amap", cache)
-                raise SystemExit(1)
-            except Exception as exc:  # noqa: BLE001
+                raise SystemExit(1) from exc
+            except Exception as exc:
                 print(f"  [{i}/{len(todo)}] {city}: 失败 {type(exc).__name__}")
             if i % 10 == 0:
                 save_cache("amap", cache)
@@ -728,10 +726,10 @@ def round_price(price: float, currency: str) -> float:
     if price <= 0:
         return 0.0
     if currency in ("JPY", "KRW", "VND", "INR", "HUF", "EGP"):
-        return float(int(round(price / 100.0)) * 100)
+        return float(round(price / 100.0) * 100)
     if price < 20:
         return round(price)
-    return float(int(round(price / 5.0)) * 5)
+    return float(round(price / 5.0) * 5)
 
 
 def build_rows(amap: dict, wikidata: dict) -> list[tuple]:

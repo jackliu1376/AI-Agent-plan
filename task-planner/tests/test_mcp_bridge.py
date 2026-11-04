@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from agent.tool_runner import MCPToolRunner
 
 EXPECTED = {

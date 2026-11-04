@@ -16,6 +16,10 @@
 
 输出同时提供 **Markdown 人类可读版** 与 **JSON 机器可解析版**。
 
+旅游类任务还会额外给出一张**行程地图**：把查证过的景点按日次标注在地图上，
+一眼看出「哪几天在哪片区域、景点之间顺不顺路」。地图用高德 JS API 渲染，
+**未配置地图 key 时自动降级为相对位置示意图**，不会白屏。
+
 ---
 
 ## 快速开始
@@ -252,6 +256,9 @@ task-planner/
 | `TOOL_RETRIES` | `1` | 工具失败重试次数 |
 | `OUTPUT_DIR` | `outputs` | 落盘沙箱根目录 |
 | `ATTRACTIONS_DB` | 内置路径 | 覆盖景点库位置 |
+| `AMAP_API_KEY` | — | 高德 **Web 服务** key，用于实时路线与景点 POI 核对 |
+| `AMAP_JS_KEY` | — | 高德 **JS API** key，用于计划页的行程地图；留空则降级为示意图 |
+| `AMAP_JS_SECURITY_CODE` | — | JS API 2.0 配套的安全密钥，与 `AMAP_JS_KEY` 同时申请 |
 
 ---
 
@@ -263,6 +270,35 @@ uv run pytest -v
 
 675 项测试对齐需求文档中的 TC-01 ~ TC-10，覆盖正常路径、澄清门控、
 多工具协作、工具失败降级、不可行约束、依赖 DAG 无环、跨领域泛化、提示注入防御。
+
+### 开发校验（CI 跑的就是这五条）
+
+```bash
+uv run ruff check .            # lint
+uv run mypy                    # 类型检查
+uv run pytest --cov            # 测试 + 覆盖率（下限 80%，写在 pyproject.toml）
+cd frontend && npm run lint    # 前端 lint
+cd frontend && npm run typecheck && npm run build
+```
+
+推送到 GitHub 后由 `.github/workflows/ci.yml` 自动执行，两个 job 并行跑。
+
+### 改提示词后的回归检查
+
+```bash
+# 首次：跑一轮冒烟集并认可为基线
+uv run task-planner-eval --tier smoke --label baseline-v1
+uv run python scripts/eval_regression.py write --label baseline-v1
+
+# 之后每次改完 prompt：
+uv run task-planner-eval --tier smoke --label after-v3
+uv run python scripts/eval_regression.py check --label after-v3
+```
+
+`check` 逐样本对比基线的通过状态，**有回归时退出码为 1**，可以直接串进 `&&`。
+
+为什么不用 `--compare` 看聚合指标：两条样本一升一降，成功率不变，报告看起来
+「没变化」—— 而行为其实已经变了。改提示词最容易踩这个坑。
 
 ---
 

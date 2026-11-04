@@ -67,7 +67,7 @@ def download(force: bool = False) -> Path:
         return ZIP_PATH
 
     print(f"下载 {SOURCE_URL} …")
-    with urlopen(SOURCE_URL, timeout=120) as resp:  # noqa: S310 - 固定官方地址
+    with urlopen(SOURCE_URL, timeout=120) as resp:
         data = resp.read()
     ZIP_PATH.write_bytes(data)
     print(f"已缓存到 {ZIP_PATH}（{len(data) / 1e6:.1f} MB）")

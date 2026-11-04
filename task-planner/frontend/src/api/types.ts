@@ -80,6 +80,37 @@ export interface PlanReadyData {
   step_count: number
   /** 修订时模型自己说这次改了哪几处。初版为空串。 */
   revision_summary: string
+  /** 地图上的景点坐标。非旅游任务或工具没跑成功时为空数组。 */
+  pois: PoiMarker[]
+}
+
+/**
+ * 地图上的一个景点。
+ *
+ * 坐标是 **GCJ-02**（高德原生坐标系），交给高德 JS API 时原样使用，
+ * 不要做任何偏移校正 —— 转成 WGS-84 反而会错位几百米。
+ *
+ * 这份数据**不落盘**（高德协议禁止存储 POI），所以打开历史会话时是空的。
+ */
+export interface PoiMarker {
+  /** 高德返回的规范名，如「杭州西湖风景名胜区」 */
+  name: string
+  /** 模型查询时用的名字，如「西湖」。正文里写的是这个。 */
+  query: string
+  city: string
+  lon: number
+  lat: number
+  /** 所属日次（`D1` / `D2`）。计划正文里没有日次标记时为空串。 */
+  day: string
+  /** 全局顺序，0 起 */
+  order: number
+}
+
+/** 高德 JS API 的浏览器端配置。未配置 key 时 `enabled` 为 false。 */
+export interface MapConfig {
+  enabled: boolean
+  key: string
+  security_code: string
 }
 
 export interface ErrorData {

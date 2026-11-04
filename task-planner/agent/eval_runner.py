@@ -75,6 +75,9 @@ class Sample:
     why: str = ""
     clarify_answer: str | None = None
     expect: dict[str, Any] = field(default_factory=dict)
+    # 分层：smoke 是「每次改完都该跑」的最小集（十几分钟内能跑完），
+    # standard 是默认全量。没有这个字段时一律当 standard —— 老样本文件不用改。
+    tier: str = "standard"
 
 
 @dataclass
@@ -218,6 +221,7 @@ def load_samples(path: Path | None = None) -> list[Sample]:
                 why=str(item.get("why") or ""),
                 clarify_answer=item.get("clarify_answer"),
                 expect=expect,
+                tier=str(item.get("tier") or "standard"),
             )
         )
 
@@ -430,6 +434,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--label", default="", help="给本轮打标签，便于跨版本对比")
     parser.add_argument("--only", default="", help="只跑指定 id")
     parser.add_argument("--category", default="", help="只跑指定类别")
+    parser.add_argument(
+        "--tier",
+        default="",
+        help="只跑指定分层（smoke / standard）。smoke 是改完就该跑的最小集",
+    )
     parser.add_argument("--limit", type=int, default=0, help="最多跑 N 条")
     parser.add_argument(
         "--repeat",
@@ -610,6 +619,8 @@ def main(argv: list[str] | None = None) -> int:
         samples = [s for s in samples if s.id == args.only]
     if args.category:
         samples = [s for s in samples if s.category == args.category]
+    if args.tier:
+        samples = [s for s in samples if s.tier == args.tier]
     if args.limit > 0:
         samples = samples[: args.limit]
 
@@ -726,7 +737,7 @@ def main(argv: list[str] | None = None) -> int:
                     print("\n⏹  已中断", file=sys.stderr)
                     aborted = True
                     break
-                except Exception as exc:  # noqa: BLE001 - 单条崩了不该中断整轮
+                except Exception as exc:
                     print(
                         f"[{index:>2}/{len(samples)}] {sample.id:<32} "
                         f"[{arm.label}] 💥 第 {attempt} 次异常: "

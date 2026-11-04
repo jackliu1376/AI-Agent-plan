@@ -315,7 +315,7 @@ def get_weather_forecast(params: WeatherParams) -> ToolResult:
         reason = ""
         try:
             reason = exc.response.json().get("reason", "") or ""
-        except Exception:  # noqa: BLE001 - 非 JSON 响应
+        except Exception:
             reason = (exc.response.text or "")[:200]
 
         match = ALLOWED_RANGE_RE.search(reason)

@@ -21,13 +21,10 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest
-
 from agent.config import Settings
 from agent.demo import ScriptedLLM
 from agent.events import Event
 from agent.loop import Orchestrator
-from agent.tool_runner import LocalToolRunner
 from tests.conftest import make_plan, plan_turn, text_turn, tool_turn
 
 WEATHER_ARGS = {"city": "成都", "start_date": "2026-10-03", "end_date": "2026-10-04"}

@@ -155,7 +155,7 @@ class Settings:
         return None
 
     @classmethod
-    def load(cls) -> "Settings":
+    def load(cls) -> Settings:
         return cls(
             api_key=_env("DEEPSEEK_API_KEY"),
             base_url=_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),

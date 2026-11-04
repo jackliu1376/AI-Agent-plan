@@ -10,6 +10,7 @@ import { ShareButton } from './components/ShareButton'
 import { fmtWhen } from './lib/formatTime'
 import { TaskInput } from './components/TaskInput'
 import { useBackendHealth } from './hooks/useBackendHealth'
+import { useHashRoute } from './hooks/useHashRoute'
 import { NARROW_QUERY, useMediaQuery } from './hooks/useMediaQuery'
 import { usePalette } from './hooks/usePalette'
 import { usePlanningSession } from './hooks/usePlanningSession'
@@ -62,6 +63,43 @@ function PlanSkeleton() {
   )
 }
 
+/**
+ * 生成中的计时提示。
+ *
+ * 模型写一份完整计划要 20–30 秒，这期间骨架是静止的。用户难受的不是
+ * 「没看到内容」，而是「不知道还要多久」—— 一个走动的秒数就能把焦虑
+ * 降下来，成本比做 token 级流式低一个数量级。
+ *
+ * 阶段靠「有没有工具在跑」判断：有就是在查证，没有就是在写计划。
+ * 这样用户能感知到「查完了、开始写了」，而不是盯着同一句话等到底。
+ */
+function GeneratingNote({ researching }: { researching: boolean }) {
+  const [seconds, setSeconds] = useState(0)
+
+  useEffect(() => {
+    // 计时从本组件挂载算起。它只在 busy 期间存在，所以每次运行自然重置；
+    // 澄清会打断 busy（组件卸载），用户回答后重新计时 —— 那段是用户在思考，
+    // 不该算进等待时间里。
+    const startedAt = Date.now()
+    const timer = window.setInterval(() => {
+      setSeconds(Math.floor((Date.now() - startedAt) / 1000))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  return (
+    <p className="gen-note" aria-live="polite">
+      <span className="gen-dot" aria-hidden="true" />
+      {/* 文案和秒数包在同一个 span 里 —— 否则 flex 的 gap 会插在
+          「正在撰写计划」和「· 已用 3 秒」之间，间距比正常空格宽一截 */}
+      <span>
+        {researching ? '正在查证资料' : '正在撰写计划'}
+        <span className="gen-elapsed"> · 已用 {seconds} 秒</span>
+      </span>
+    </p>
+  )
+}
+
 export default function App() {
   const {
     state,
@@ -82,6 +120,103 @@ export default function App() {
   const health = useBackendHealth()
   const healthStatus = health.status
   const [palette, setPalette] = usePalette()
+
+  // -- 地址栏同步 ---------------------------------------------------------
+  //
+  // 会话 id 写进 hash：刷新能回到当前会话、链接可以发给别人、后退键能生效。
+  const [routeId, navigate] = useHashRoute()
+  // 每个 routeId 最近一次恢复的时间戳。
+  //
+  // **不能用「已处理过的 id 集合」**：那会导致用户回首页后再点同一个会话
+  // 不重新加载（页面空白）。也不能用「正在恢复」的布尔守卫：restore 失败时
+  // sessionId 不更新，守卫一清就又发一轮。
+  //
+  // 时间窗口两头都满足：循环是毫秒级的，3 秒足够挡住；用户手动重进
+  // 同一会话间隔远大于 3 秒，不受影响。
+  const handledRef = useRef<Map<string, number>>(new Map())
+  const badRouteRef = useRef<string | null>(null)
+  const RESTORE_DEDUPE_MS = 3000
+
+  // 用 ref 转一道拿最新的 restore / reset。
+  //
+  // **这两个回调不能进 effect 依赖。** 它们内部 dispatch 会改 state，
+  // state 变 → 重渲染 → 若回调引用也变了，effect 就重跑 → 再发一次请求，
+  // 滚成肉眼可见的轮询。把依赖收窄到「地址」这一个变量，
+  // effect 就只在用户真的换地址时才跑。
+  const restoreRef = useRef(restore)
+  const resetRef = useRef(reset)
+  useEffect(() => {
+    restoreRef.current = restore
+    resetRef.current = reset
+  })
+
+  // 地址 → 会话。依赖只有 routeId：它只在 hashchange 时变。
+  useEffect(() => {
+    if (routeId === null) return
+    const now = Date.now()
+    const last = handledRef.current.get(routeId) ?? 0
+    if (now - last < RESTORE_DEDUPE_MS) return
+    handledRef.current.set(routeId, now)
+    void restoreRef.current(routeId)
+  }, [routeId])
+
+  /**
+   * 打开一个会话的**唯一入口**。
+   *
+   * 侧栏点击如果直接调 restore，会走两条路：
+   * 1. 点击 → restore(id)
+   * 2. restore 改了 sessionId → 状态同步 effect 写 hash → routeId 变 → 上面的
+   *    effect 再 restore(id) 一次
+   *
+   * 第二次 restore 会 `invalidatePendingLoads()` 把第一次作废，两个请求互相
+   * 打架，最后谁也没落地 —— 页面看起来就是「点了历史却跳回主页」。
+   *
+   * 这里先把 id 记进 handledRef 再 restore，上面那个 effect 看到时间戳就会跳过。
+   */
+  const openSession = useCallback(
+    (sessionId: string) => {
+      handledRef.current.set(sessionId, Date.now())
+      navigate(sessionId)
+      void restoreRef.current(sessionId)
+    },
+    [navigate],
+  )
+
+  // 回到首页时清掉会话内容。不带 reset 进依赖，理由同上。
+  useEffect(() => {
+    if (routeId === null && sessionId !== null) resetRef.current()
+  }, [routeId, sessionId])
+
+  /**
+   * 回到首页（点 logo / 新建任务 / 计划失败后重来）。
+   *
+   * 必须**同时**清地址，否则刷新会回到刚离开的那个会话 —— 用户以为
+   * 「新建任务」了，一刷新又跳回去，很困惑。
+   */
+  const goHome = useCallback(() => {
+    handledRef.current.clear()
+    badRouteRef.current = null
+    navigate(null)
+    resetRef.current()
+  }, [navigate])
+
+  // 状态 → hash。**只写不清**：sessionId 变 null 时不主动清地址，
+  // 因为 restore 过程中 sessionId 会短暂为空，那时清地址会把用户
+  // 刚点开的会话顶回主页。真正需要清地址的场景（新建任务、删除会话）
+  // 由各自的按钮显式调 navigate(null)。
+  useEffect(() => {
+    if (sessionId !== null) navigate(sessionId)
+  }, [sessionId, navigate])
+
+  // 坏链接兜底：直接打开一个不存在的会话时 restore 会失败，但**当前会话
+  // 不会被清掉**（页面还显示着上一个计划）。同一个坏 id 只清一次地址，
+  // 否则会触发上面的循环。
+  useEffect(() => {
+    if (phase !== 'failed' || routeId === null || sessionId === routeId) return
+    if (badRouteRef.current === routeId) return
+    badRouteRef.current = routeId
+    navigate(null)
+  }, [phase, sessionId, routeId, navigate])
 
   // 折叠状态持久化 —— 用户折叠了侧栏，刷新后不该弹回来
   const narrow = useMediaQuery(NARROW_QUERY)
@@ -352,11 +487,11 @@ export default function App() {
         collapsed={railCollapsed}
         canToggle={!narrow}
         onToggle={toggleRail}
-        onHome={reset}
+        onHome={goHome}
         history={history}
         activeId={sessionId}
-        onSelect={restore}
-        onNew={reset}
+        onSelect={openSession}
+        onNew={goHome}
         onDelete={requestDelete}
         palette={palette}
         onPaletteChange={setPalette}
@@ -449,7 +584,7 @@ export default function App() {
                     取消
                   </button>
                 ) : phase === 'failed' ? (
-                  <button type="button" className="btn quiet" onClick={reset}>
+                  <button type="button" className="btn quiet" onClick={goHome}>
                     重新开始
                   </button>
                 ) : (
@@ -467,6 +602,12 @@ export default function App() {
 
           {started && <EvidenceList probes={probes} busy={busy} />}
 
+          {/* 等待期间的计时提示。首次生成和修订都会走到这里 ——
+              修订时用户同样要干等 20 秒，只是下面的计划还在（被压暗）。 */}
+          {started && busy && (
+            <GeneratingNote researching={probes.some((probe) => probe.status === 'running')} />
+          )}
+
           {/* 首次生成：还没有任何计划，用骨架占位 */}
           {started && busy && !hasPlan && <PlanSkeleton />}
 
@@ -481,6 +622,9 @@ export default function App() {
                 seq={activeSeq}
                 revisionSummary={result.revision_summary}
                 historical={historical}
+                // 旧记录里没有 pois 字段（该字段是后加的），兜底成空数组
+                // 让地图整个不渲染，而不是报错。
+                pois={result.pois ?? []}
                 onJumpToComposer={showComposer ? jumpToComposer : undefined}
               />
             </div>

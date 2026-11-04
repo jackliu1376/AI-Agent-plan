@@ -24,6 +24,7 @@ from typing import Any
 
 from agent.config import Settings
 from agent.demo import ScriptedLLM, build_demo_script
+from agent.llm_client import LLMClient
 from agent.loop import Orchestrator
 from agent.tool_runner import LocalToolRunner, MCPToolRunner, registered_tool_names
 from common.console import ensure_safe_stdio
@@ -78,7 +79,7 @@ def _error_hint(exc: BaseException) -> str:
     return ""
 
 
-def _print_result(result) -> int:  # noqa: ANN001
+def _print_result(result) -> int:
     print("\n" + "=" * 60)
     print("📋 计划（人类可读版）")
     print("=" * 60)
@@ -182,6 +183,9 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings.load()
 
     # ---- 选择 LLM ----
+    # 显式标注联合接口：演示模式给 ScriptedLLM，真实模式给 DeepSeekClient，
+    # 两者都满足 LLMClient 协议，下游只认这个协议
+    llm: LLMClient
     if args.demo:
         llm = ScriptedLLM(build_demo_script())
         task = args.task or "我想周末去成都玩两天，带小孩，人均预算 1000"
@@ -203,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     ask_user = _make_ask_user(interactive=not args.demo and sys.stdin.isatty())
 
     # ---- 选择工具通道 ----
-    def _on_event(event) -> None:  # noqa: ANN001
+    def _on_event(event) -> None:
         icons = {
             "run_started": "▶",
             "turn_started": "◆",
@@ -248,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n⏹  已中断", file=sys.stderr)
         return 130
-    except Exception as exc:  # noqa: BLE001 - CLI 顶层兜底：给人话，不吐 traceback
+    except Exception as exc:
         print(f"\n❌ 运行失败：{type(exc).__name__}: {exc}", file=sys.stderr)
         hint = _error_hint(exc)
         if hint:
@@ -283,7 +287,8 @@ def main(argv: list[str] | None = None) -> int:
         if saved.ok:
             print(f"\n💾 已保存到 {saved.data['path']}")
         else:
-            print(f"\n❌ 保存失败：{saved.error.message}", file=sys.stderr)
+            message = saved.error.message if saved.error else "未知错误"
+            print(f"\n❌ 保存失败：{message}", file=sys.stderr)
 
     return code
 

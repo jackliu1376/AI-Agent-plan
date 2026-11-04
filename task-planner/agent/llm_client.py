@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -175,7 +176,5 @@ class DeepSeekClient:
         GC 回收为止 —— Web 层每次运行都新建一个 client，会话一多就是
         fd / socket 持续累积。**绝不抛异常**：收尾失败不该影响调用方。
         """
-        try:
+        with contextlib.suppress(Exception):
             self._client.close()
-        except Exception:  # noqa: BLE001 - 见上
-            pass

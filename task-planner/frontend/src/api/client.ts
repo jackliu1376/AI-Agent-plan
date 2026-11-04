@@ -13,6 +13,7 @@
 
 import type {
   CreateSessionResponse,
+  MapConfig,
   PlanEvent,
   RevisionResponse,
   RevisionView,
@@ -54,10 +55,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
     })
   } catch (err) {
+    // 带上 cause：调用方在控制台能看到真正的底层异常（DNS 失败、证书过期、
+    // 被代理拦截），否则只剩一句「无法连接」，排障时无从下手。
     if (err instanceof DOMException && err.name === 'TimeoutError') {
-      throw new Error('请求超时，请检查网络或稍后重试。')
+      throw new Error('请求超时，请检查网络或稍后重试。', { cause: err })
     }
-    throw new Error('无法连接到服务端，请确认后端已启动。')
+    throw new Error('无法连接到服务端，请确认后端已启动。', { cause: err })
   }
 
   if (!resp.ok) {
@@ -132,6 +135,16 @@ export function deleteSession(sessionId: string): Promise<{ ok: boolean }> {
 
 export function listTools(): Promise<ToolsResponse> {
   return request<ToolsResponse>('/tools')
+}
+
+/**
+ * 取地图渲染配置。
+ *
+ * 后端未配置 `AMAP_JS_KEY` 时返回 `enabled: false`，调用方据此降级成
+ * 自绘示意图 —— 不要在这里抛错，没配地图是**正常状态**，不是故障。
+ */
+export function getMapConfig(): Promise<MapConfig> {
+  return request<MapConfig>('/map/config')
 }
 
 // ---------------------------------------------------------------------------

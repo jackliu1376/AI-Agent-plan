@@ -261,7 +261,7 @@ class ScriptedLLM:
         self._script = list(script)
         self.calls = 0
 
-    def chat(self, messages, tools=None) -> LLMResponse:  # noqa: ANN001
+    def chat(self, messages, tools=None) -> LLMResponse:
         response = self._script[min(self.calls, len(self._script) - 1)]
         self.calls += 1
         return response

@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# 同一分支连续推送时取消前一次运行 —— 只在最新提交上跑检查，省 runner 时间
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端（lint / 类型 / 测试）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: task-planner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: task-planner/uv.lock
+
+      - name: 安装依赖
+        run: uv sync --dev
+
+      - name: Lint（ruff）
+        run: uv run ruff check .
+
+      - name: 类型检查（mypy）
+        run: uv run mypy
+
+      - name: 测试 + 覆盖率
+        # 覆盖率下限写在 pyproject.toml 的 fail_under，低于 80% 会直接失败
+        run: uv run pytest --cov --cov-report=term
+
+  frontend:
+    name: 前端（lint / 类型 / 构建）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: task-planner/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: task-planner/frontend/package-lock.json
+
+      # 用 ci 而不是 install：严格按 lock 安装，lock 与 package.json 不一致时直接失败
+      - name: 安装依赖
+        run: npm ci
+
+      - name: Lint（eslint）
+        run: npm run lint
+
+      - name: 类型检查（tsc）
+        run: npm run typecheck
+
+      - name: 构建
+        run: npm run build

@@ -71,7 +71,7 @@ def _trim_args(args: Any) -> Any:
     try:
         text = json.dumps(args, ensure_ascii=False, default=str)
         normalized = json.loads(text)
-    except Exception:  # noqa: BLE001 - 连 str() 都可能抛（自定义 __repr__）
+    except Exception:
         return {"_unserializable": True}
 
     if len(text) <= MAX_ARGS_CHARS:
@@ -208,7 +208,7 @@ def append_record(entry: dict[str, Any], path: Path | None = None) -> bool:
         with target.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
         return True
-    except Exception:  # noqa: BLE001 - 日志是旁路，绝不能影响主流程
+    except Exception:
         return False
 
 

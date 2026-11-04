@@ -23,6 +23,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 from html.parser import HTMLParser
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -124,7 +125,10 @@ def _fetch_limited(url: str, *, timeout: int) -> tuple[str | None, str]:
             return None, f"拒绝访问：{blocked}"
 
         try:
-            with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            # 保持两层 with 而不是合并成一行：client 和 stream 是两级资源，
+            # 合起来那行会超过 100 字符且要重排整个 30 行的循环体，
+            # 为省一层缩进付出这么大的 diff 不划算。
+            with httpx.Client(timeout=timeout, follow_redirects=False) as client:  # noqa: SIM117
                 with client.stream("GET", current, headers={"User-Agent": USER_AGENT}) as resp:
                     if resp.is_redirect:
                         location = resp.headers.get("location")

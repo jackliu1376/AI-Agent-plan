@@ -38,9 +38,9 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from mcp_server.data.cities import lookup_city
 from mcp_server.tools.base import PROJECT_ROOT, env

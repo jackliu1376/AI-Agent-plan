@@ -267,7 +267,7 @@ function drawMetrics(ctx: Ctx, y: number, metrics: Metric[]): number {
 
 function drawPhase(ctx: Ctx, y: number, name: string, index: number, total: number): number {
   let cur = y
-  cur += textBlock(ctx, cur, `${index + 1} / ${total}　${name}`, {
+  cur += textBlock(ctx, cur, `${index + 1} / ${total}\u3000${name}`, {
     size: 27, weight: 600, lh: 1.4, maxLines: 1,
   })
   cur += 14

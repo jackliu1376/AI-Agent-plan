@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -142,7 +143,7 @@ def test_bad_path_returns_false_instead_of_raising(tmp_path) -> None:
 def test_corrupted_json_columns_fall_back(session_db: SessionDB) -> None:
     """坏行不能让整个文件读不出来（与 runs.jsonl 同一条原则）。"""
     session_db.save(_session())
-    with session_db._connect() as conn:  # noqa: SLF001 - 测试需要制造脏数据
+    with session_db._connect() as conn:
         conn.execute("UPDATE sessions SET events = '{不是 JSON', result = '###'")
         conn.commit()
 
@@ -185,7 +186,7 @@ async def test_store_persists_on_status_change(session_db: SessionDB) -> None:
 
     session.status = "running"
     # _persist 现在是协程（内部走 asyncio.to_thread，避免阻塞事件循环）
-    await session._persist()  # noqa: SLF001 - 直接驱动，省去跑一遍 set_status
+    await session._persist()
     assert session_db.load(session.id)["status"] == "running"
 
 
@@ -299,7 +300,7 @@ async def test_store_get_hydrates_from_disk(session_db: SessionDB) -> None:
     session.status = "done"
     session.result = {"ok": True, "step_count": 3}
     session.events = [{"type": "plan_ready", "data": {"ok": True}}]
-    await session._persist()  # noqa: SLF001
+    await session._persist()
 
     reader = SessionStore(db=session_db)  # 全新的内存表，等价于重启
     revived = reader.get(session.id)
@@ -325,7 +326,7 @@ async def test_dropped_session_cannot_be_resurrected(session_db: SessionDB) -> N
     session = store.create("任务")
     store.drop(session.id)
 
-    await session._persist()  # noqa: SLF001 - 模拟被取消的任务收尾时的那次写盘
+    await session._persist()
     assert session_db.load(session.id) is None, "已删除的会话被写回来了"
 
 
@@ -534,12 +535,11 @@ async def test_startup_marks_orphans_interrupted(settings: Settings, session_db:
 
     app = _build(settings, session_db)
     # httpx 的 ASGITransport 不会自己跑 lifespan，这里显式进入
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            listing = (await client.get("/api/sessions")).json()
-            view = (await client.get("/api/sessions/orphan01")).json()
+    async with app.router.lifespan_context(app), AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        listing = (await client.get("/api/sessions")).json()
+        view = (await client.get("/api/sessions/orphan01")).json()
 
     assert listing["sessions"][0]["status"] == "interrupted"
     assert listing["sessions"][0]["ok"] is False
@@ -571,7 +571,7 @@ async def test_cancelled_session_does_not_come_back(
         def __init__(self, inner: Any) -> None:
             self._inner = inner
 
-        def chat(self, messages, tools=None):  # noqa: ANN001
+        def chat(self, messages, tools=None):
             time.sleep(0.3)
             return self._inner.chat(messages, tools=tools)
 
@@ -603,7 +603,7 @@ async def test_disabled_db_keeps_pure_memory(settings: Settings, monkeypatch) ->
         llm_factory=lambda _s: ScriptedLLM(normal_script()),
         rate_limit=100,
     )
-    assert app.state.store._db is None  # noqa: SLF001
+    assert app.state.store._db is None
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         sid = await _run_task(client)
@@ -646,3 +646,43 @@ def test_live_statuses_are_the_three_non_terminal_ones(status: str) -> None:
 
     assert status in LIVE_STATUSES
     assert status not in FINISHED_STATUSES
+
+
+# ---------------------------------------------------------------------------
+# 坐标不落盘
+# ---------------------------------------------------------------------------
+
+
+def test_poi_coordinates_are_not_persisted() -> None:
+    """景点坐标不能写进 sessions.db —— 高德服务协议 3.5 条禁止存储 POI 数据。
+
+    内存里保留（当次会话的地图要用），磁盘上抹掉。代价是服务重启后打开
+    旧会话地图为空 —— 这是刻意的取舍，不是 bug，所以用测试钉住。
+
+    三个位置都要覆盖：``result.pois``、``plan_ready`` 事件的 ``data.pois``、
+    以及每一版 revisions 里的 ``result.pois``。
+    """
+    from web.session_db import _snapshot
+
+    pois = [
+        {"name": "杭州西湖风景名胜区", "query": "西湖", "lon": 120.153576,
+         "lat": 30.287459, "day": "D1", "order": 0}
+    ]
+    result = {"ok": True, "markdown": "### D1\n西湖", "step_count": 1, "pois": pois}
+
+    session = Session(id="s1", task="这周末去杭州玩两天")
+    session.result = result
+    session.events = [{"type": "plan_ready", "data": dict(result)}]
+    session.revisions = [
+        {"seq": 1, "feedback": "", "created_at": 0.0, "result": dict(result)}
+    ]
+
+    row = _snapshot(session)
+
+    assert "pois" not in json.loads(row["result"])
+    assert "pois" not in json.loads(row["events"])[0]["data"]
+    assert "pois" not in json.loads(row["revisions"])[0]["result"]
+
+    # 内存对象不能被改坏 —— 剥掉只发生在序列化这一步
+    assert session.result is not None and "pois" in session.result
+    assert "pois" in session.events[0]["data"]

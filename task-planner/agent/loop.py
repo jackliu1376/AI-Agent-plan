@@ -39,18 +39,23 @@ import json
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from agent.config import Settings
 from agent.events import Event
 from agent.llm_client import LLMClient, ToolCallRequest
+from agent.poi import PoiMarker, assign_days, collect_markers, extract_marker
 from agent.schema import Plan, extract_extra_str, parse_plan
 from agent.tool_runner import LocalToolRunner, ToolRunner
 from common.envelope import ERR_BAD_ARGS, ERR_BUDGET_EXCEEDED, ToolResult
 
 # 澄清回调：同步（CLI 的 input()、测试里的假回调）与异步（Web 挂起等待前端回填）都支持。
 AskUserFn = Callable[[dict[str, Any]], "str | Awaitable[str]"]
+
+# 会挂起等待用户回答的工具。批里出现它就不能并发 —— 多个澄清同时挂起时，
+# 前端只显示一个弹窗，其余的永远等不到答案，整轮卡死。
+INTERACTIVE_TOOL = "ask_user_clarification"
 
 # 提示注入的启发式特征（仅用于标记与统计，不做拦截；拦截由系统提示词负责）
 INJECTION_PATTERNS = [
@@ -248,6 +253,9 @@ class PlanResult:
     # 修订功能专有：模型自己说这次改了哪几处。初版为空串。
     # 单独放一个字段而不是塞进 Plan —— Plan 是评测基准 schema，加字段会让样本失效。
     revision_summary: str = ""
+    # 地图上的景点坐标。同样不进 Plan：坐标是工具副产物，模型并不知道真实值，
+    # 让它输出只会得到编造的数字。这里由编排循环边跑边收集（见 agent/poi.py）。
+    pois: list[PoiMarker] = field(default_factory=list)
 
     def summary(self) -> str:
         status = "成功" if self.ok else "未产出可用计划"
@@ -276,6 +284,9 @@ class PlanResult:
             "trace": self.trace.to_dict(),
             "step_count": self.step_count,
             "revision_summary": self.revision_summary,
+            # 坐标是 GCJ-02（高德原生）。前端用高德 JS API 渲染，不做坐标转换。
+            # 高德协议禁止存储 POI 数据，所以这份数据只活在本次运行的内存里。
+            "pois": [p.to_dict() for p in self.pois],
         }
 
 
@@ -304,6 +315,8 @@ class Orchestrator:
         # run_stream 产出的最终结果暂存在这里，供 run() / run_async() 取用。
         # 因此同一个实例不要并发跑多个任务 —— Web 层应为每个会话创建独立实例。
         self._last_result: PlanResult | None = None
+        # 本次运行收集到的景点坐标（见 agent/poi.py）。每次 run_stream 重置。
+        self._pois: list[PoiMarker] = []
 
     # -- 小工具 -----------------------------------------------------------
 
@@ -379,6 +392,7 @@ class Orchestrator:
         指令模板包住了，特征词容易漏检。
         """
         self._last_result = None
+        self._pois = []
         trace = LoopTrace(budget=self.settings.tool_budget)
         trace.started_at = time.time()
         trace.injection_flags = detect_injection(user_input)
@@ -440,48 +454,51 @@ class Orchestrator:
                     self._log("模型给出最终回复")
                     break
 
-                self._log(f"模型请求 {len(response.tool_calls)} 次工具调用")
-                for call in response.tool_calls:
+                calls = list(response.tool_calls)
+                self._log(f"模型请求 {len(calls)} 次工具调用")
+                serial_reason = self._serial_reason(calls)
+                if serial_reason:
+                    self._log(f"串行执行（{serial_reason}）")
+                elif len(calls) > 1:
+                    self._log(f"并发执行 {len(calls)} 次互不依赖的调用")
+
+                # tool_call 一律先按请求顺序全部发出。
+                # 前端 EvidenceList 按工具名维护 FIFO 队列来配对 result，
+                # 所以这里发全了反而更好 —— 用户能立刻看到「本次要查 3 项」。
+                for call in calls:
                     yield Event("tool_call", {"tool": call.name, "args": call.arguments})
 
-                    result = await self._execute(call, cache, trace)
+                results: list[ToolResult] = []
+                if serial_reason:
+                    # 串行路径：澄清要在这里当场挂起。并发跑的话会有多个
+                    # Future 同时等待，前端只弹一个框，其余的永远等不到答案。
+                    for call in calls:
+                        result = await self._execute(call, cache, trace)
+                        if result.needs_user_input():
+                            trace.interrupts += 1
+                            payload = result.data or {}
+                            yield Event(
+                                "clarification",
+                                {
+                                    "question": payload.get("question", ""),
+                                    "options": payload.get("options", []),
+                                    "reason": payload.get("reason", ""),
+                                },
+                            )
+                            result = await self._resolve_clarification(call.name, payload)
+                        results.append(result)
+                else:
+                    results = await self._execute_batch(calls, cache, trace)
 
-                    # 澄清中断：先产出事件（前端弹窗提问），再挂起等待答案回填
-                    if result.needs_user_input():
-                        trace.interrupts += 1
-                        payload = result.data or {}
-                        yield Event(
-                            "clarification",
-                            {
-                                "question": payload.get("question", ""),
-                                "options": payload.get("options", []),
-                                "reason": payload.get("reason", ""),
-                            },
-                        )
-                        result = await self._resolve_clarification(call.name, payload)
-
-                    yield Event(
-                        "tool_result",
-                        {
-                            "tool": call.name,
-                            "ok": result.ok,
-                            # 人话摘要：前端「已查证」列表用它代替原始的
-                            # `latency_ms · 预算 1/12`。失败时为空串。
-                            "summary": _tool_summary(call.name, result),
-                            "error_code": result.error.code if result.error else None,
-                            # 错误详情也要带上。原来只传 code，前端只能显示
-                            # 「参数不合法」这种四字标签 —— 而后端其实写了
-                            # 「预报只覆盖到 10-23，请改用区间内的日期」这种
-                            # 可执行的说明。把它丢掉，用户看到的就是「为什么
-                            # 报错了」而得不到答案。
-                            "error_message": result.error.message if result.error else None,
-                            "latency_ms": result.meta.latency_ms,
-                            "attempts": result.meta.attempts,
-                            "cached": result.meta.cached,
-                            "budget_used": trace.budget_used,
-                            "budget": trace.budget,
-                        },
+                # result 必须**按请求顺序**发，不能按完成顺序 ——
+                # 两次同名工具调用（比如连着查两个景点）如果按完成顺序回来，
+                # 前端 FIFO 队列会把 A 的结果配到 B 的卡片上。
+                for call, result in zip(calls, results, strict=True):
+                    # 坐标是景点工具的副产物，顺手收进地图数据集
+                    self._pois = collect_markers(
+                        self._pois, extract_marker(call.name, result.data)
                     )
+                    yield Event("tool_result", self._tool_result_payload(call, result, trace))
                     messages.append(self._tool_message(call.id, result))
             else:
                 trace.stop_reason = "max_turns_reached"
@@ -513,7 +530,7 @@ class Orchestrator:
                 final_text = response.content
                 plan, parse_error = parse_plan(final_text)
 
-        except Exception as exc:  # noqa: BLE001 - 任何异常都要变成可诊断的结果，不能裸抛
+        except Exception as exc:
             trace.stop_reason = "runtime_error"
             trace.error = f"{type(exc).__name__}: {exc}"
             self._log(f"❌ 运行异常：{trace.error}")
@@ -539,15 +556,19 @@ class Orchestrator:
 
         trace.duration_ms = int((time.time() - trace.started_at) * 1000)
 
+        plan_markdown = strip_json_block(final_text)
         self._last_result = PlanResult(
             ok=plan is not None and trace.dag_ok,
             plan=plan,
-            markdown=strip_json_block(final_text),
+            markdown=plan_markdown,
             raw_text=final_text,
             trace=trace,
             messages=messages,
             # 初版不会有这个 key，读出来就是空串 —— 不需要分支判断
             revision_summary=extract_extra_str(final_text, "revision_summary"),
+            # 日次归属靠计划正文判断（正文里写「D1 西湖 · 灵隐寺」）。
+            # 放在这里而不是收集时做：收集时正文还没生成。
+            pois=assign_days(plan_markdown, self._pois),
         )
         yield Event("plan_ready", self._last_result.to_event_data())
 
@@ -577,6 +598,125 @@ class Orchestrator:
             source="host",
         )
 
+    # -- 一批工具调用 -----------------------------------------------------
+
+    def _serial_reason(self, calls: list[ToolCallRequest]) -> str:
+        """返回「这一批必须串行」的理由；空串表示可以并发。
+
+        只有**全幂等、且不含交互工具**的批才并发。两条排除理由都是硬约束：
+
+        - 交互工具会挂起等用户回答。并发跑的话会有多个 Future 同时等待，
+          前端只弹一个框，其余的永远等不到答案，整轮卡死。
+        - 非幂等工具（写文件）通常有先后依赖，且并发写同一路径会互相覆盖。
+        """
+        if len(calls) <= 1:
+            return "单次调用"
+        from mcp_server.tools.base import TOOL_REGISTRY
+
+        for call in calls:
+            if call.name == INTERACTIVE_TOOL:
+                return f"批内含交互工具 {call.name}"
+            spec = TOOL_REGISTRY.get(call.name)
+            if spec is not None and not spec.idempotent:
+                return f"批内含非幂等工具 {call.name}"
+        return ""
+
+    async def _execute_batch(
+        self,
+        calls: list[ToolCallRequest],
+        cache: dict[str, ToolResult],
+        trace: LoopTrace,
+    ) -> list[ToolResult]:
+        """并发执行一批互不依赖的调用，返回结果**与入参同序**。
+
+        并发前先做批内去重：``cache`` 的「查-写」之间隔着 ``await``，
+        同一批里参数完全相同的两次调用会双双 miss、各执行一次 ——
+        串行时不存在这个窗口，并发后就会白烧一次预算。
+        """
+        unique: list[ToolCallRequest] = []
+        index_of: dict[str, int] = {}
+        plan: list[int] = []  # 原下标 → unique 里的下标
+        for call in calls:
+            key = self._cache_key(call.name, dict(call.arguments or {}))
+            existing = index_of.get(key)
+            if existing is not None:
+                plan.append(existing)
+                continue
+            index_of[key] = len(unique)
+            plan.append(index_of[key])
+            unique.append(call)
+
+        if len(unique) < len(calls):
+            self._log(f"批内去重：{len(calls)} 次调用合并为 {len(unique)} 次实际执行")
+
+        # 每个 unique 调用第一次出现在原批的哪个位置 —— 用来区分
+        # 「真实执行」和「复用同批结果」两种记录
+        first_at: dict[int, int] = {}
+        for idx, slot in enumerate(plan):
+            first_at.setdefault(slot, idx)
+
+        # 每个协程写自己的 records，避免并发 append 打乱 trace 顺序
+        records: list[list[ToolCallRecord]] = [[] for _ in unique]
+        try:
+            gathered = await asyncio.gather(
+                *(
+                    self._execute(call, cache, trace, records[i])
+                    for i, call in enumerate(unique)
+                )
+            )
+        finally:
+            # 按**请求顺序**重建 trace。重复出现的调用补一条 cached 记录 ——
+            # 这样与串行时「第二次命中缓存」的语义完全一致，评测指标不受影响。
+            # 异常时也要并回去，否则排障看到的是「请求了 3 次、只记了 1 次」。
+            for idx, slot in enumerate(plan):
+                if first_at[slot] == idx:
+                    trace.tool_calls.extend(records[slot])
+                    continue
+                base = records[slot][0] if records[slot] else None
+                trace.tool_calls.append(
+                    ToolCallRecord(
+                        tool=calls[idx].name,
+                        args=dict(calls[idx].arguments or {}),
+                        ok=base.ok if base is not None else False,
+                        cached=True,
+                        error_code=base.error_code if base is not None else None,
+                    )
+                )
+
+        results: list[ToolResult] = []
+        for idx, slot in enumerate(plan):
+            item = gathered[slot]
+            if first_at[slot] != idx:
+                # 复用同批结果的调用要标成「缓存命中」，否则前端显示成
+                # 「刚查完」，看起来像查了两次
+                item = replace(item, meta=replace(item.meta, cached=True))
+            results.append(item)
+        return results
+
+    def _tool_result_payload(
+        self, call: ToolCallRequest, result: ToolResult, trace: LoopTrace
+    ) -> dict[str, Any]:
+        """构造 ``tool_result`` 事件的 data。串行 / 并发两条路径共用。"""
+        return {
+            "tool": call.name,
+            "ok": result.ok,
+            # 人话摘要：前端「已查证」列表用它代替原始的
+            # `latency_ms · 预算 1/12`。失败时为空串。
+            "summary": _tool_summary(call.name, result),
+            "error_code": result.error.code if result.error else None,
+            # 错误详情也要带上。原来只传 code，前端只能显示
+            # 「参数不合法」这种四字标签 —— 而后端其实写了
+            # 「预报只覆盖到 10-23，请改用区间内的日期」这种
+            # 可执行的说明。把它丢掉，用户看到的就是「为什么
+            # 报错了」而得不到答案。
+            "error_message": result.error.message if result.error else None,
+            "latency_ms": result.meta.latency_ms,
+            "attempts": result.meta.attempts,
+            "cached": result.meta.cached,
+            "budget_used": trace.budget_used,
+            "budget": trace.budget,
+        }
+
     # -- 单次工具调用 -----------------------------------------------------
 
     async def _execute(
@@ -584,18 +724,24 @@ class Orchestrator:
         call: ToolCallRequest,
         cache: dict[str, ToolResult],
         trace: LoopTrace,
+        records: list[ToolCallRecord] | None = None,
     ) -> ToolResult:
         """执行一次工具调用（幂等去重 + 预算门控）。
 
-        注意两点：
+        注意三点：
 
         1. **缓存查找排在预算门控之前** —— 命中缓存不消耗预算，因此预算耗尽时
            仍应能拿到缓存数据。反过来会让模型误以为「数据缺失」。
         2. **不处理澄清中断** —— 那需要产出事件并挂起，由 ``run_stream`` 负责。
+        3. **``records`` 是给并发批用的**。并发时多个协程会同时往
+           ``trace.tool_calls`` 里 append，顺序就变成「完成顺序」而不是
+           「请求顺序」—— 评测里按 trace 回放会错位。传入独立列表后由调用方
+           按请求顺序合并，trace 的顺序就稳定了。
         """
         from mcp_server.tools.base import TOOL_REGISTRY, tool_settings
 
         name, args = call.name, dict(call.arguments or {})
+        target = trace.tool_calls if records is None else records
 
         # 1) 幂等去重（写操作 / 交互类工具不参与去重）
         spec = TOOL_REGISTRY.get(name)
@@ -604,7 +750,7 @@ class Orchestrator:
         if idempotent and key in cache:
             cached = cache[key]
             cached.meta.cached = True
-            trace.tool_calls.append(
+            target.append(
                 ToolCallRecord(
                     tool=name,
                     args=args,
@@ -616,13 +762,15 @@ class Orchestrator:
             self._log(f"♻️ {name} 命中缓存，不消耗预算")
             return cached
 
-        # 2) 预算门控
+        # 2) 预算门控 —— **先占位再执行**。
+        # 原来是执行完才 `+= 1`，串行时没问题；并发时两个协程会同时通过检查
+        # （各自读到旧的 budget_used），实际调用数就会超出预算上限。
         if trace.budget_used >= trace.budget:
             trace.budget_exceeded = True
             self._log(f"⛔ 工具预算耗尽，拒绝 {name}")
             # 被拒绝的调用也要记进 trace —— 否则「模型请求了几次」与
             # 「trace 记了几次」对不上，所有基于 trace 的指标都会系统性偏低。
-            trace.tool_calls.append(
+            target.append(
                 ToolCallRecord(tool=name, args=args, ok=False, error_code=ERR_BUDGET_EXCEEDED)
             )
             return ToolResult.failure(
@@ -631,13 +779,13 @@ class Orchestrator:
                 "并在相应步骤标注 '⚠️ 数据缺失'。",
                 tool=name,
             )
+        trace.budget_used += 1
 
         # 3) 真正执行（把 Settings 里的超时/重试注入工具层）
         with tool_settings(
             timeout=self.settings.tool_timeout, retries=self.settings.tool_retries
         ):
             result = await self.runner.call(name, args)
-        trace.budget_used += 1
 
         record = ToolCallRecord(
             tool=name,
@@ -647,7 +795,7 @@ class Orchestrator:
             latency_ms=result.meta.latency_ms,
             attempts=result.meta.attempts,
         )
-        trace.tool_calls.append(record)
+        target.append(record)
         status = "✅" if result.ok else f"❌ {record.error_code}"
         self._log(f"{status} {name} ({record.latency_ms}ms / {record.attempts} 次尝试)")
 

@@ -85,7 +85,7 @@ class AttractionsParams(BaseModel):
 
     @field_validator("tags", mode="before")
     @classmethod
-    def _coerce_tags(cls, v):  # noqa: ANN001
+    def _coerce_tags(cls, v):
         if v is None:
             return []
         if isinstance(v, str):
@@ -106,7 +106,7 @@ def _coverage_note() -> str:
                 "SELECT country, COUNT(DISTINCT city) AS n FROM attractions "
                 "GROUP BY country ORDER BY n DESC, country"
             ).fetchall()
-    except Exception:  # noqa: BLE001 - 描述生成失败不该阻断工具注册
+    except Exception:
         return ""
 
     if not rows:

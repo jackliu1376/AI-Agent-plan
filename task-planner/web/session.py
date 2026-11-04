@@ -37,6 +37,7 @@ Web 场景和 CLI 有三个根本差异：
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 import uuid
@@ -230,15 +231,14 @@ class Session:
             with self._io_lock:
                 if self.dropped:
                     return
-                try:
-                    self._on_change()
-                except Exception:  # noqa: BLE001 - 持久化是旁路
-                    pass
+                # 先判空再调：原来靠 `except Exception` 吞掉「None 不可调用」
+                # 的 TypeError，能跑但语义是错的 —— 没配回调是正常状态，不是异常
+                if self._on_change is not None:
+                    with contextlib.suppress(Exception):
+                        self._on_change()
 
-        try:
+        with contextlib.suppress(Exception):
             await asyncio.to_thread(_write)
-        except Exception:  # noqa: BLE001 - 同上
-            pass
 
     # -- 事件 -------------------------------------------------------------
 
@@ -267,12 +267,10 @@ class Session:
             async with self._condition:
                 if cursor >= len(self.events) and not self.stream_done:
                     # 没有新事件就等一会儿，超时后发心跳
-                    try:
+                    with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(
                             self._condition.wait(), timeout=HEARTBEAT_SECONDS
                         )
-                    except (TimeoutError, asyncio.TimeoutError):
-                        pass
                 batch = self.events[cursor:]
                 cursor = len(self.events)
                 done = self.stream_done
@@ -356,7 +354,7 @@ class Session:
             return await asyncio.wait_for(
                 self._answer_future, timeout=CLARIFY_TIMEOUT_SECONDS
             )
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             # 用户不回答不能让协程永久挂起 —— 降级为「按假设继续」，
             # 与「没有交互通道」时的行为保持一致。
             self.timed_out = True
@@ -525,10 +523,8 @@ class SessionStore:
 
     def _notify_evicted(self, session_id: str) -> None:
         if self._on_evict is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._on_evict(session_id)
-            except Exception:  # noqa: BLE001 - 钩子失败不该影响回收本身
-                pass
 
     def _evict(self) -> int:
         """回收超时会话；若仍超出上限，按最旧优先淘汰。

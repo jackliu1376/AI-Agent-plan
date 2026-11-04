@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 
 import pytest
@@ -19,7 +18,7 @@ from agent.tool_runner import LocalToolRunner
 from common.envelope import ERR_BUDGET_EXCEEDED
 from mcp_server.tools.attractions import _coverage_note
 from mcp_server.tools.base import invoke, tool_retries, tool_settings, tool_timeout
-from mcp_server.tools.web import _TextExtractor, fetch_webpage, host_is_blocked
+from mcp_server.tools.web import _TextExtractor, host_is_blocked
 from tests.conftest import make_plan, plan_turn, text_turn, tool_turn
 
 WEATHER = {"city": "成都", "start_date": "2026-10-03", "end_date": "2026-10-04"}
@@ -138,7 +137,7 @@ def local_site(monkeypatch: pytest.MonkeyPatch):
     )
 
     class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             if self.path == "/redirect":
                 self.send_response(302)
                 self.send_header("Location", "/page")
@@ -387,7 +386,7 @@ def test_budget_rejection_is_recorded_in_trace(settings: Settings, fake_weather,
 
 
 class _ExplodingLLM:
-    def chat(self, messages, tools=None):  # noqa: ANN001
+    def chat(self, messages, tools=None):
         raise RuntimeError("上游炸了")
 
 
@@ -493,7 +492,7 @@ def test_orchestrator_injects_settings_into_tools(
     from agent import tool_runner as tr_module
     from mcp_server.tools.base import invoke as real_invoke
 
-    def spy(name: str, args=None, *, retries=None):  # noqa: ANN001
+    def spy(name: str, args=None, *, retries=None):
         seen["timeout"] = tool_timeout()
         seen["retries"] = tool_retries()
         return real_invoke(name, args, retries=retries)

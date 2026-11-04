@@ -11,16 +11,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from common.envelope import ToolError, ToolMeta, ToolResult  # noqa: F401  (对外转出)
+from common.envelope import ToolError, ToolMeta, ToolResult
 
 __all__ = [
+    "Phase",
+    "Plan",
+    "Risk",
+    "Step",
     "ToolError",
     "ToolMeta",
     "ToolResult",
-    "Step",
-    "Phase",
-    "Risk",
-    "Plan",
     "extract_extra_str",
     "extract_json_block",
     "parse_plan",
@@ -124,7 +124,7 @@ class Plan(BaseModel):
     # 用户拿到空计划却被告知成功，批量评测也会把这类样本误计为通过。
 
     @model_validator(mode="after")
-    def _validate_structure(self) -> "Plan":
+    def _validate_structure(self) -> Plan:
         steps = self.all_steps()
 
         if not steps:
@@ -152,7 +152,7 @@ class Plan(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_freshness(self) -> "Plan":
+    def _validate_freshness(self) -> Plan:
         """引用了时效性数据源时，必须交代数据时效与核实渠道。
 
         触发条件是「计划里真的用到了会过期的数据」，而不是「任务是不是旅游」——
@@ -264,7 +264,7 @@ def parse_plan(text: str) -> tuple[Plan | None, str]:
         return None, "回复中未找到可解析的 JSON 计划块"
     try:
         plan = Plan.model_validate(obj)
-    except Exception as exc:  # noqa: BLE001 - 需要把校验细节回传给模型修复
+    except Exception as exc:
         return None, f"计划结构校验失败: {exc}"
     return plan, ""
 

@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
+import time
 
 import pytest
 
@@ -617,3 +619,136 @@ def test_strip_json_block_keeps_markdown() -> None:
 def test_wrap_user_input_uses_delimiters() -> None:
     wrapped = wrap_user_input("  去成都  ")
     assert "<user_task>\n去成都\n</user_task>" in wrapped
+
+
+# ---------------------------------------------------------------------------
+# 同一 turn 内的并发执行
+# ---------------------------------------------------------------------------
+
+
+class _SlowRunner:
+    """每次调用固定延迟的工具执行器。
+
+    用它来测「并发是否真的生效」—— 真实工具耗时不可控，测不出时序差异。
+    """
+
+    def __init__(self, delay: float) -> None:
+        self.delay = delay
+        self.called: list[str] = []
+
+    def list_tool_schemas(self) -> list[dict]:
+        from mcp_server.tools.base import load_all_tools, openai_tool_schemas
+
+        load_all_tools()
+        return openai_tool_schemas()
+
+    async def call(self, name: str, args: dict) -> object:
+        from common.envelope import ToolResult
+
+        self.called.append(str(args.get("city") or name))
+        await asyncio.sleep(self.delay)
+        return ToolResult.success({"echo": name}, tool=name)
+
+
+def test_independent_tool_calls_run_concurrently(settings: Settings) -> None:
+    """一个 turn 内互不依赖的调用应当并发，而不是排队。
+
+    三个各 0.12 秒的调用：串行约 0.36 秒，并发约 0.12 秒。
+    阈值取 0.30 秒 —— 离串行足够远，也不至于被机器抖动误伤。
+    """
+    runner = _SlowRunner(0.12)
+    cities = ["杭州", "上海", "北京"]
+    llm = ScriptedLLM(
+        [
+            tool_turn(
+                *[
+                    (
+                        f"c{i}",
+                        "get_weather_forecast",
+                        {"city": city, "start_date": "2026-11-07", "end_date": "2026-11-08"},
+                    )
+                    for i, city in enumerate(cities)
+                ]
+            ),
+            plan_turn(make_plan()),
+        ]
+    )
+
+    started = time.perf_counter()
+    result = Orchestrator(llm, runner, settings).run("三天三城天气")
+    elapsed = time.perf_counter() - started
+
+    assert result.ok, result.raw_text
+    assert len(result.trace.tool_calls) == 3
+    assert elapsed < 0.30, f"看起来仍在串行执行，耗时 {elapsed:.3f}s"
+
+
+def test_concurrent_batch_keeps_request_order_in_trace(settings: Settings) -> None:
+    """并发后 trace 仍按**请求顺序**记录，不是完成顺序。
+
+    评测和排障都按 trace 回放，顺序一乱，所有基于下标的分析都会错位。
+    """
+    runner = _SlowRunner(0.02)
+    cities = ["杭州", "上海", "北京"]
+    llm = ScriptedLLM(
+        [
+            tool_turn(
+                *[
+                    (f"c{i}", "get_weather_forecast", {"city": city})
+                    for i, city in enumerate(cities)
+                ]
+            ),
+            plan_turn(make_plan()),
+        ]
+    )
+
+    result = Orchestrator(llm, runner, settings).run("三天三城天气")
+
+    assert [c.args["city"] for c in result.trace.tool_calls] == cities
+
+
+def test_duplicate_calls_in_one_batch_execute_once(settings: Settings) -> None:
+    """同一批里参数完全相同的调用只真正执行一次。
+
+    ``cache`` 的「查-写」之间隔着 await，并发时两次相同调用会双双 miss
+    然后各执行一次 —— 白烧一次预算。串行时不存在这个窗口。
+    """
+    runner = _SlowRunner(0.01)
+    args = {"city": "成都", "start_date": "2026-11-07", "end_date": "2026-11-08"}
+    llm = ScriptedLLM(
+        [
+            tool_turn(("c1", "get_weather_forecast", args), ("c2", "get_weather_forecast", args)),
+            plan_turn(make_plan()),
+        ]
+    )
+
+    result = Orchestrator(llm, runner, settings).run("成都两日游")
+
+    # 实际执行一次，但 trace 仍记两条（第二条标 cached）
+    assert runner.called == ["成都"]
+    assert len(result.trace.tool_calls) == 2
+    assert result.trace.tool_calls[1].cached is True
+    assert result.trace.budget_used == 1
+
+
+def test_serial_reason_blocks_concurrency_for_interactive_and_writes(
+    settings: Settings,
+) -> None:
+    """交互工具和非幂等工具会强制整批串行。
+
+    交互工具并发跑会有多个 Future 同时挂起，前端只弹一个框，其余永远等不到
+    答案；写操作并发写同一路径会互相覆盖。
+    """
+    from tests.conftest import make_tool_call
+
+    orch = Orchestrator(ScriptedLLM([plan_turn(make_plan())]), _SlowRunner(0.0), settings)
+
+    weather = make_tool_call("c1", "get_weather_forecast", {"city": "杭州"})
+    other = make_tool_call("c2", "get_weather_forecast", {"city": "上海"})
+    assert orch._serial_reason([weather, other]) == ""
+
+    clarify = make_tool_call("c3", "ask_user_clarification", {"question": "几天？"})
+    assert "交互工具" in orch._serial_reason([weather, clarify])
+
+    save = make_tool_call("c4", "save_itinerary", {"path": "a.md", "content": "x"})
+    assert "非幂等工具" in orch._serial_reason([weather, save])

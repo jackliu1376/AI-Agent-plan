@@ -58,11 +58,11 @@ class ToolResult(BaseModel):
     # -- 构造快捷方式 -----------------------------------------------------
 
     @classmethod
-    def success(cls, data: Any, **meta: Any) -> "ToolResult":
+    def success(cls, data: Any, **meta: Any) -> ToolResult:
         return cls(ok=True, data=data, meta=ToolMeta(**meta))
 
     @classmethod
-    def failure(cls, code: str, message: str, **meta: Any) -> "ToolResult":
+    def failure(cls, code: str, message: str, **meta: Any) -> ToolResult:
         return cls(ok=False, error=ToolError(code=code, message=message), meta=ToolMeta(**meta))
 
     # -- 序列化 -----------------------------------------------------------

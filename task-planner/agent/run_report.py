@@ -25,6 +25,7 @@ import json
 import statistics
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,7 @@ BAR = "─" * 60
 # ---------------------------------------------------------------------------
 
 
-def _safe_mean(values: list[float]) -> float:
+def _safe_mean(values: Sequence[float]) -> float:
     return round(statistics.fmean(values), 2) if values else 0.0
 
 
@@ -305,10 +306,7 @@ def _fmt_delta(current: Any, baseline: Any, style: str, direction: str) -> str:
             return "0   ="
         return f"{diff:+.1f}（基线为 0）"
 
-    if style == "pp":
-        text = f"{diff:+.1f}pp"
-    else:
-        text = f"{diff / base * 100:+.1f}%"
+    text = f"{diff:+.1f}pp" if style == "pp" else f"{diff / base * 100:+.1f}%"
 
     if abs(diff) < 1e-9:
         return f"{text}   ="

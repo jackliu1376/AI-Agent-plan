@@ -1017,6 +1017,33 @@ body {
   transition: opacity 0.2s ease;
 }
 
+/* 生成中的计时提示。压在骨架（或压暗的旧计划）上方，一行字交代
+   「在干什么 + 已经多久」。走动的秒数是重点 —— 它把「不知道还要等多久」
+   变成「它在推进」，这是最便宜的焦虑缓解。 */
+.gen-note {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.gen-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-3);
+  animation: ps-breathe 1.6s ease-in-out infinite;
+  flex: none;
+}
+
+/* 等宽数字：秒数从 9 跳到 10 时宽度会变，不加这个整行会轻微抖动 */
+.gen-elapsed {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
 /* 首次生成时的骨架屏。只在「正在跑且还没有任何计划」时出现 ——
    这时页面本来是空的，骨架比一句「生成中」更能说明「马上有东西」。 */
 .plan-skeleton {
@@ -2469,4 +2496,160 @@ body {
     transition: none;
     opacity: 0;
   }
+}
+
+/* ============================================================
+   行程地图
+   ============================================================
+   卡片结构与 .note 同源（发丝线 + 白面 + 无阴影），但它是「正文的一块」
+   而不是「一条提示」，所以有独立的标题行和脚注行。
+*/
+
+.tripmap {
+  margin-bottom: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.tripmap-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 16px 10px;
+  flex-wrap: wrap;
+}
+
+.tripmap-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.tripmap-facts {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.tripmap-days {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.tripmap-days button {
+  font: inherit;
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-2);
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.tripmap-days button:hover {
+  border-color: var(--ink-3);
+  color: var(--ink);
+}
+
+/* 选中态用主色实心 —— 与侧栏「新建任务」同一套语言，不做第二种高亮 */
+.tripmap-days button.on {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
+
+.tripmap-canvas {
+  position: relative;
+  height: 340px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+/* 高德需要一个「已挂载且有尺寸」的节点，所以这个 div 常驻，
+   只靠 hidden 控制可见性 —— 条件渲染会让异步初始化拿到 null。 */
+.tripmap-live {
+  position: absolute;
+  inset: 0;
+}
+
+.tripmap-live[hidden] {
+  display: none;
+}
+
+/* 遮罩要有不透明底色 —— 地图容器在加载阶段是可见的（高德需要读尺寸），
+   没有底色的话会先看到一块空白再突然出现地图。 */
+.tripmap-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  color: var(--ink-3);
+  background: var(--surface-2);
+}
+
+.tripmap-fallback {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 地图标记。白描边 + 一层极轻投影是必要的：底图本身有大量浅色细节，
+   没有描边的圆点会糊在里面分不清边界。 */
+.tripmap-pin {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 18%);
+  cursor: default;
+  user-select: none;
+}
+
+.tripmap-foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 9px 16px;
+  flex-wrap: wrap;
+}
+
+.tripmap-legend {
+  display: flex;
+  gap: 14px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.tripmap-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tripmap-legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.tripmap-source {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-3);
 }

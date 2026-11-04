@@ -31,12 +31,74 @@ task-planner-eval = "agent.eval_runner:main"
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.17.0",
+    "mypy>=2.4.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-q"
+
+# ---------------------------------------------------------------------------
+# Lint（ruff）
+# ---------------------------------------------------------------------------
+# 只做 check，不做 format —— 存量代码已经按人眼排过版，跑 formatter 会产生
+# 上千行无关 diff，掩盖真实改动。需要统一格式时再单独开一次。
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+exclude = [".venv", "build", "dist", "*.egg-info", "web/static"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    # 行宽交给 formatter 判断；check 阶段报 E501 只会逼人写难读的短行
+    "E501",
+    # 中文全角标点在注释和用户文案里是正常的，不是「易混淆字符」
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # FastAPI 的 Depends() / Query() 作默认值是标准写法
+    "B008",
+]
+
+# ---------------------------------------------------------------------------
+# 类型检查（mypy）
+# ---------------------------------------------------------------------------
+# 从「能跑通」起步，不开 strict。存量代码的类型标注是渐进的，
+# 一上来就 strict 会报几百条，没人会去修，最后只会把整个检查关掉。
+
+[tool.mypy]
+python_version = "3.11"
+files = ["agent", "common", "mcp_server", "web"]
+ignore_missing_imports = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+# 不检查未标注类型的函数体 —— 那是 strict 的范畴，留到下一步
+check_untyped_defs = false
+
+# ---------------------------------------------------------------------------
+# 覆盖率
+# ---------------------------------------------------------------------------
+
+[tool.coverage.run]
+source = ["agent", "common", "mcp_server", "web"]
+omit = ["*/tests/*", "web/static/*"]
+
+[tool.coverage.report]
+# 实测 83%，下限设 80% —— 留 3 个点余量，避免正常波动（新增一个没测的分支）
+# 就把 CI 打红。低于这个数说明有整块逻辑没被测到，值得停下来看看。
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
 
 [tool.uv]
 package = true

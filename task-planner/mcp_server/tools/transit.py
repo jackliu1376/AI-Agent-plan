@@ -39,7 +39,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
-from common.envelope import ERR_BAD_ARGS, ERR_NOT_FOUND, ERR_UPSTREAM_ERROR, ToolResult
+from common.envelope import ERR_NOT_FOUND, ERR_UPSTREAM_ERROR, ToolResult
 from mcp_server.data.cities import lookup_city
 from mcp_server.tools.base import env, register, tool_timeout
 from mcp_server.tools.route import AMAP_KEY_ENV, AMAP_QUOTA_INFOCODE, amap_covers
@@ -514,7 +514,7 @@ def _probe(origin: str, destination: str) -> int:
         with httpx.Client(timeout=20) as client:
             resp = client.get(AMAP_TRANSIT_URL, params=query)
             payload = resp.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"❌ 请求失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 

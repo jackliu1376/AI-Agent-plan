@@ -170,18 +170,17 @@ class FakeAmapClient:
         self._exc = exc
         self.calls: list[dict[str, Any]] = []
 
-    def __enter__(self) -> "FakeAmapClient":
+    def __enter__(self) -> FakeAmapClient:
         return self
 
     def __exit__(self, *args: object) -> bool:
         return False
 
-    def get(self, url: str, params: dict[str, Any] | None = None):  # noqa: ANN201
+    def get(self, url: str, params: dict[str, Any] | None = None):
         self.calls.append({"url": url, "params": params or {}})
         if self._exc is not None:
             raise self._exc
 
-        import httpx
 
         payload = self._payload
 

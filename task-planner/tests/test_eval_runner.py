@@ -309,7 +309,7 @@ def _install_fake_runner(monkeypatch: pytest.MonkeyPatch):
     from agent import eval_runner
     from agent.eval_runner import Outcome
 
-    def fake(sample, *, llm, settings):  # noqa: ANN001
+    def fake(sample, *, llm, settings):
         return Outcome(
             sample=sample, result=_result(ok=True), failures=[], clarify_count=0
         )
@@ -633,7 +633,7 @@ def test_interleaved_alternates_arm_order(
     seen: list[float] = []
     fake = _install_fake_runner(monkeypatch)
 
-    def spy(sample, *, llm, settings):  # noqa: ANN001
+    def spy(sample, *, llm, settings):
         seen.append(settings.temperature)
         return fake(sample, llm=llm, settings=settings)
 
@@ -661,7 +661,7 @@ def test_interleaved_runs_arms_adjacent_per_sample(
     seen: list[tuple[str, float]] = []
     real_spy = _install_fake_runner(monkeypatch)
 
-    def spy(sample, *, llm, settings):  # noqa: ANN001
+    def spy(sample, *, llm, settings):
         seen.append((sample.id, settings.temperature))
         return real_spy(sample, llm=llm, settings=settings)
 

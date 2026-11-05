@@ -52,7 +52,7 @@ interface AMapNamespace {
 declare global {
   interface Window {
     AMap?: AMapNamespace
-    _AMapSecurityConfig?: { securityJsCode: string }
+    _AMapSecurityConfig?: { securityJsCode?: string; serviceHost?: string }
   }
 }
 
@@ -90,15 +90,28 @@ function loadConfig(): Promise<MapConfig> {
  */
 const SCRIPT_TIMEOUT_MS = 6000
 
-function loadAmap(key: string, securityCode: string): Promise<AMapNamespace> {
+function loadAmap(config: MapConfig): Promise<AMapNamespace> {
   if (window.AMap !== undefined) return Promise.resolve(window.AMap)
   if (loader !== null) return loader
 
   loader = new Promise<AMapNamespace>((resolve, reject) => {
-    // securityJsCode 必须在脚本加载**之前**挂到 window 上，
-    // 否则 SDK 初始化时读不到，会抛 INVALID_USER_SCODE。
-    if (securityCode.length > 0) {
-      window._AMapSecurityConfig = { securityJsCode: securityCode }
+    // _AMapSecurityConfig 必须在脚本加载**之前**挂到 window 上，
+    // 否则 SDK 初始化时读不到。
+    //
+    // 两种模式：
+    //   serviceHost    —— 安全密钥藏在 Nginx 里，浏览器只知道往哪转发。
+    //                     生产环境用这个，前端拿不到密钥。
+    //   securityJsCode —— 明文把密钥交给 SDK。只在没有反向代理时用
+    //                     （本地开发），高德官方明确不建议在生产环境这么干。
+    if (config.service_host.length > 0) {
+      // 允许后端只返回路径（`/_AMapService`），补全成绝对地址 ——
+      // 高德 SDK 需要一个能直接 fetch 的 URL。
+      const host = config.service_host.startsWith('/')
+        ? `${window.location.origin}${config.service_host}`
+        : config.service_host
+      window._AMapSecurityConfig = { serviceHost: host }
+    } else if (config.security_code.length > 0) {
+      window._AMapSecurityConfig = { securityJsCode: config.security_code }
     }
 
     const script = document.createElement('script')
@@ -118,7 +131,7 @@ function loadAmap(key: string, securityCode: string): Promise<AMapNamespace> {
       SCRIPT_TIMEOUT_MS,
     )
 
-    script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(key)}`
+    script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(config.key)}`
     script.async = true
     script.onload = () => {
       if (settled) return
@@ -324,7 +337,7 @@ export const TripMap = memo(function TripMap({ pois }: Props) {
       }
 
       try {
-        const amap = await loadAmap(config.key, config.security_code)
+        const amap = await loadAmap(config)
         if (cancelled) return
         const el = containerRef.current
         if (el === null) return

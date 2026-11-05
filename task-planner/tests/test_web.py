@@ -580,3 +580,45 @@ async def test_web_failed_run_is_also_logged(
     assert records[0]["ok"] is False
     assert records[0]["output_status"] == "runtime_error"
     assert "上游炸了" in records[0]["error"]
+
+
+# ---------------------------------------------------------------------------
+# 地图配置：安全密钥的两种下发方式
+# ---------------------------------------------------------------------------
+
+
+async def test_map_config_inline_mode_without_proxy(
+    settings: Settings, make_app, client_factory, monkeypatch
+) -> None:
+    """没有反向代理时，明文下发密钥 —— 本地开发只能这样。"""
+    monkeypatch.setenv("AMAP_JS_KEY", "test-key")
+    monkeypatch.setenv("AMAP_JS_SECURITY_CODE", "test-secret")
+    monkeypatch.delenv("AMAP_SERVICE_HOST", raising=False)
+
+    client = client_factory(make_app(normal_script))
+    body = (await client.get("/api/map/config")).json()
+
+    assert body["enabled"] is True
+    assert body["key"] == "test-key"
+    assert body["service_host"] == ""
+    assert body["security_code"] == "test-secret"
+
+
+async def test_map_config_proxy_mode_hides_secret(
+    settings: Settings, make_app, client_factory, monkeypatch
+) -> None:
+    """配了代理就不再下发密钥本身。
+
+    两者同时有值等于白改 —— 密钥照样能在浏览器里看到。
+    """
+    monkeypatch.setenv("AMAP_JS_KEY", "test-key")
+    monkeypatch.setenv("AMAP_JS_SECURITY_CODE", "test-secret")
+    monkeypatch.setenv("AMAP_SERVICE_HOST", "/_AMapService")
+
+    client = client_factory(make_app(normal_script))
+    body = (await client.get("/api/map/config")).json()
+
+    assert body["service_host"] == "/_AMapService"
+    assert body["security_code"] == ""
+    # key 本身仍然下发 —— 它设计上就是给浏览器的，靠白名单和配额防护
+    assert body["key"] == "test-key"

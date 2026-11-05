@@ -1,0 +1,55 @@
+[Unit]
+Description=Cairn task planner agent
+Documentation=https://github.com/your-name/AI-Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cairn
+Group=cairn
+WorkingDirectory=/opt/cairn/task-planner
+
+# .env 里的变量全部注入进程环境。
+# ⚠️ 这个文件必须是 LF 换行 —— systemd 会把 \r 当成值的一部分，
+#    结果是 `DEEPSEEK_API_KEY=sk-xxx\r` 被发给上游，报 401。
+#    从 Windows 传上来后先跑：sed -i 's/\r$//' /opt/cairn/task-planner/.env
+EnvironmentFile=/opt/cairn/task-planner/.env
+
+# 只监听回环，外部一律经 Nginx。8000 端口不要在防火墙/安全组里放行。
+Environment=WEB_HOST=127.0.0.1
+Environment=WEB_PORT=8000
+# 限流按真实客户端 IP 计数。不设的话所有请求都被算成 127.0.0.1，
+# 一个人就能把全站额度用光，别人全被限流。
+Environment=WEB_TRUST_PROXY=1
+# 日志立刻刷出，否则 journalctl 里看不到实时进度
+Environment=PYTHONUNBUFFERED=1
+
+# ⚠️ 不要加 --workers / --reload。
+# Session、限流计数器、后台清理协程都在进程内存里，多进程会各持一份：
+# SSE 订阅落在 A 进程、POST /answers 落到 B 进程 → 404 或永久挂起。
+ExecStart=/opt/cairn/task-planner/.venv/bin/python -m web.serve
+
+Restart=always
+RestartSec=3
+# 生成一份长计划要 30 秒以上，停服时留出收尾时间
+TimeoutStopSec=20
+KillSignal=SIGINT
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cairn
+
+# ---- 最小权限 ----
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+# 只有这两处可写：会话库与计划输出
+ReadWritePaths=/opt/cairn/task-planner/logs /opt/cairn/task-planner/outputs
+
+[Install]
+WantedBy=multi-user.target

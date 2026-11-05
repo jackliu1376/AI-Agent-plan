@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { getAuthStatus, setUnauthorizedHandler } from './api/client'
+import type { AuthStatus } from './api/client'
 import { ClarificationCard } from './components/ClarificationCard'
 import { Composer } from './components/Composer'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { EvidenceList, StageLine, buildProbes } from './components/EvidenceList'
 import { HeroCollage } from './components/HeroCollage'
+import { LoginGate } from './components/LoginGate'
 import { PlanView } from './components/PlanView'
 import { Rail } from './components/Rail'
 import { ShareButton } from './components/ShareButton'
@@ -100,7 +103,7 @@ function GeneratingNote({ researching }: { researching: boolean }) {
   )
 }
 
-export default function App() {
+function CairnApp() {
   const {
     state,
     start,
@@ -714,3 +717,44 @@ export default function App() {
     </div>
   )
 }
+
+export default function App() {
+  // null = 还在问服务端「要不要登录」。这一小段时间什么都不渲染，
+  // 否则会先闪一下主界面再被弹到登录页。
+  const [auth, setAuth] = useState<AuthStatus | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getAuthStatus()
+      .then((status) => {
+        if (!cancelled) setAuth(status)
+      })
+      .catch(() => {
+        // 问不到状态（后端没起）时**不能**把人锁在登录页 ——
+        // 那样用户连「后端未启动」的提示都看不到。放行，让主界面
+        // 自己显示连接失败。
+        if (!cancelled) setAuth({ required: false, authenticated: true })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // 运行中令牌失效（服务端换了 WEB_ACCESS_TOKEN）时自动回登录页，
+  // 而不是让用户对着一串 401 报错猜原因。
+  useEffect(() => {
+    setUnauthorizedHandler(() => setAuth({ required: true, authenticated: false }))
+    return () => setUnauthorizedHandler(null)
+  }, [])
+
+  if (auth === null) return <div className="gate gate-pending" aria-busy="true" />
+
+  if (auth.required && !auth.authenticated) {
+    // 登录成功后整页重载：此时 usePlanningSession 已经按未登录状态
+    // 初始化过（会话列表请求被 401 挡掉），就地切换会留下一堆空状态。
+    return <LoginGate onSuccess={() => window.location.reload()} />
+  }
+
+  return <CairnApp />
+}
+

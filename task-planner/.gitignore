@@ -6,7 +6,12 @@ __pycache__/
 .ruff_cache/
 outputs/*
 !outputs/.gitkeep
-uv.lock
+
+# 会话库含用户任务原文与生成的计划，绝不入库
+logs/
+
+# uv.lock 必须提交：这是应用而不是库，部署时要靠它复现完全一致的依赖版本。
+# （曾被忽略过，导致 CI 的缓存失效、服务器装的版本和本地不一致）
 dist/
 build/
 *.egg-info/

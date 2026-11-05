@@ -110,6 +110,17 @@ export interface PoiMarker {
 export interface MapConfig {
   enabled: boolean
   key: string
+  /**
+   * 走反向代理时的服务前缀（如 `/_AMapService`）。
+   *
+   * 非空时说明后端把安全密钥藏在 Nginx 里了，前端只需要知道往哪转发，
+   * 拿不到密钥本身。此时 `security_code` 一定是空串。
+   */
+  service_host: string
+  /**
+   * 明文安全密钥。**只在没有配代理时才有值** —— 本地开发用。
+   * 生产环境应当配 `AMAP_SERVICE_HOST`，让这个字段为空。
+   */
   security_code: string
 }
 

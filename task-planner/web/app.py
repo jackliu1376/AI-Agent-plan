@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import inspect
 import json
 import os
@@ -44,7 +45,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent.config import Settings
@@ -53,6 +54,13 @@ from agent.loop import Orchestrator, revision_instruction, wrap_user_input
 from agent.run_log import record_run, settings_params
 from agent.tool_runner import LocalToolRunner
 from mcp_server.tools.base import load_all_tools, openai_tool_schemas
+from web.auth import (
+    COOKIE_NAME,
+    AccessTokenMiddleware,
+    cookie_kwargs,
+    cookie_value,
+    is_authorized,
+)
 from web.session import LIVE_STATUSES, TERMINAL_EVENT_TYPES, Session, SessionStore
 from web.session_db import SessionDB, is_enabled
 
@@ -69,6 +77,16 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 class CreateSessionRequest(BaseModel):
     task: str = Field(min_length=2, max_length=500, description="自然语言任务描述")
+
+
+class LoginRequest(BaseModel):
+    """登录：把 ``WEB_ACCESS_TOKEN`` 交上来换一个 cookie。
+
+    ``min_length=1`` 而不是更严格的下限 —— 令牌长度由用户决定，
+    这里只挡住空字符串，真正的校验交给 ``compare_digest``。
+    """
+
+    token: str = Field(min_length=1, max_length=200)
 
 
 class CreateSessionResponse(BaseModel):
@@ -234,6 +252,7 @@ def create_app(
     rate_window: float = 3600.0,
     janitor_interval: float = 60.0,
     trust_proxy: bool = False,
+    access_token: str = "",
 ) -> FastAPI:
     """构建 FastAPI 应用。
 
@@ -271,6 +290,11 @@ def create_app(
         db=db if db is not None else _default_db()
     )
     app.state.limiter = RateLimiter(rate_limit, rate_window)
+    # 登录接口单独一套更严的额度 —— 全站限流是 10 次/窗口，
+    # 用它挡暴力破解太宽松了。
+    app.state.login_limiter = RateLimiter(5, 60.0)
+    # 空串 = 关闭鉴权（本地开发默认）。非空则所有 /api 请求都要带凭证。
+    app.state.access_token = access_token or os.getenv("WEB_ACCESS_TOKEN", "").strip()
     app.state.tasks = {}  # session_id -> asyncio.Task，防止被 GC
     app.state.trust_proxy = trust_proxy
 
@@ -282,6 +306,12 @@ def create_app(
             task.cancel()
 
     app.state.store.set_on_evict(_cancel_session_task)
+
+    # 鉴权必须在 CORS **之前**添加。
+    # Starlette 的中间件是后进先出：最后 add 的在最外层、最先执行。
+    # 所以这里先加鉴权、后加 CORS，运行时 CORS 在外层 —— 401 响应才会
+    # 带上跨域头。反过来的话前端只会看到「CORS 错误」，看不到真正的 401。
+    app.add_middleware(AccessTokenMiddleware)
 
     # 开发期方便：Vite dev server 默认 5173
     app.add_middleware(
@@ -303,6 +333,44 @@ def create_app(
             "active_sessions": app.state.store.size,
         }
 
+    # -- 鉴权 -------------------------------------------------------------
+    #
+    # 三个接口都在中间件的 PUBLIC_PATHS 里 —— 登录本身当然不能要求已登录。
+
+    @app.get("/api/auth/status", summary="是否需要登录、当前是否已登录")
+    async def auth_status(request: Request) -> dict[str, Any]:
+        token = app.state.access_token
+        return {
+            "required": bool(token),
+            # 未配置令牌时 is_authorized 恒返回 True，前端据此直接进主界面
+            "authenticated": is_authorized(_raw_headers(request), token),
+        }
+
+    @app.post("/api/auth/login", summary="用访问令牌换取登录 cookie")
+    async def auth_login(request: Request, payload: LoginRequest) -> JSONResponse:
+        token = app.state.access_token
+        if not token:
+            # 没配令牌说明鉴权是关的，直接告诉前端「不用登」
+            return JSONResponse({"ok": True, "required": False})
+
+        client = _client_key(request, trust_proxy=app.state.trust_proxy)
+        if not app.state.login_limiter.allow(client):
+            raise HTTPException(status_code=429, detail="尝试次数过多，请一分钟后再试。")
+
+        # compare_digest 而不是 ==：避免逐字符比较提前返回，泄露前缀（计时侧信道）
+        if not hmac.compare_digest(payload.token, token):
+            raise HTTPException(status_code=401, detail="访问令牌不正确。")
+
+        response = JSONResponse({"ok": True, "required": True})
+        response.set_cookie(value=cookie_value(token), **_cookie_args(request))
+        return response
+
+    @app.post("/api/auth/logout", summary="退出登录")
+    async def auth_logout() -> JSONResponse:
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE_NAME, path="/")
+        return response
+
     @app.get("/api/tools", summary="可用工具清单")
     async def list_tools() -> dict[str, Any]:
         schemas = openai_tool_schemas()
@@ -322,24 +390,34 @@ def create_app(
     async def map_config() -> dict[str, Any]:
         """下发高德 JS API 的浏览器端凭据。
 
-        **为什么这个 key 可以下发，而 ``DEEPSEEK_API_KEY`` 不行**
-        --------------------------------------------------------
+        **为什么 key 可以下发，而 ``DEEPSEEK_API_KEY`` 不行**
+        ---------------------------------------------------
         高德 JS API 的 key 设计上就是给浏览器用的 —— 它被写进 script URL，
         任何人打开页面都能看到，靠「域名白名单 + 配额」而不是保密来防护。
         LLM 的 key 则是纯服务端凭据，泄露即被盗刷，两者性质完全不同。
 
-        真正需要留意的是 ``security_code``：高德官方建议用服务端代理转发
-        来避免它出现在前端。本项目是**本地单机服务**（默认只听 127.0.0.1），
-        直接下发可以接受；如果要把这个服务暴露到公网，应改为代理方案 ——
-        否则任何人拿到这对凭据都能消耗你的配额。
+        **安全密钥有两种下发方式**
 
-        未配置时 ``enabled=false``，前端降级为自绘示意图而不是白屏。
+        - 配了 ``AMAP_SERVICE_HOST``（如 ``/_AMapService``）→ 走反向代理。
+          密钥留在 Nginx 里，前端只知道往哪转发，**这个接口不再返回密钥**。
+          高德官方推荐的生产做法。
+        - 没配 → 返回 ``security_code`` 明文，由前端交给 SDK。
+          只适合本地开发：没有 Nginx 就没有代理，不给明文地图就出不来。
+
+        两者互斥，不会同时有值 —— 配了代理还下发密钥，等于白改。
+
+        未配置 key 时 ``enabled=false``，前端降级为自绘示意图而不是白屏。
         """
         key = os.getenv("AMAP_JS_KEY", "").strip()
+        service_host = os.getenv("AMAP_SERVICE_HOST", "").strip()
         return {
             "enabled": bool(key),
             "key": key,
-            "security_code": os.getenv("AMAP_JS_SECURITY_CODE", "").strip(),
+            "service_host": service_host,
+            # 走代理时不下发明文密钥。留空是刻意的，不是漏了。
+            "security_code": (
+                "" if service_host else os.getenv("AMAP_JS_SECURITY_CODE", "").strip()
+            ),
         }
 
     # -- 会话 -------------------------------------------------------------
@@ -565,6 +643,32 @@ def _require(app: FastAPI, session_id: str) -> Session:
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在或已过期。")
     return session
+
+
+def _raw_headers(request: Request) -> dict[bytes, bytes]:
+    """请求头转成中间件用的 bytes 映射（键统一小写）。
+
+    为什么不在 ``is_authorized`` 里直接收 ``Headers`` 对象：
+    中间件拿到的是 ASGI 的 ``list[tuple[bytes, bytes]]``，两条路径共用
+    同一个函数就得先归一化，否则会出现「中间件放行、路由判 401」这种
+    只在某条路径上复现的怪问题。
+    """
+    return {
+        key.lower().encode("latin-1"): value.encode("latin-1")
+        for key, value in request.headers.items()
+    }
+
+
+def _cookie_args(request: Request) -> dict[str, Any]:
+    """``set_cookie`` 的参数，Secure 只在 HTTPS 下开。
+
+    本地 ``http://localhost`` 如果带了 ``Secure``，浏览器会**静默丢弃**
+    这个 cookie —— 表现为「提示登录成功，刷新又回到登录页」，
+    而且控制台没有任何报错，很难查。
+    """
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    scheme = forwarded.split(",")[0].strip() or request.url.scheme
+    return cookie_kwargs(secure=scheme == "https")
 
 
 def _client_key(request: Request, *, trust_proxy: bool) -> str:
@@ -797,6 +901,7 @@ def _build_default_app() -> FastAPI:
     return create_app(
         rate_limit=int(os.getenv("WEB_RATE_LIMIT", "10")),
         trust_proxy=os.getenv("WEB_TRUST_PROXY") == "1",
+        access_token=os.getenv("WEB_ACCESS_TOKEN", "").strip(),
     )
 
 

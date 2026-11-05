@@ -2653,3 +2653,126 @@ body {
   font-size: 11px;
   color: var(--ink-3);
 }
+
+/* ---------------------------------------------------------------------------
+   访问令牌登录页
+   只在服务端配置了 WEB_ACCESS_TOKEN 时出现，本地开发看不到这一屏。
+--------------------------------------------------------------------------- */
+
+.gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+/* 问服务端「要不要登录」的那一小段时间。留白而不是转圈 ——
+   通常只有几十毫秒，转圈闪一下反而更显眼。 */
+.gate-pending {
+  background: var(--bg);
+}
+
+.gate-card {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 32px 30px 26px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+}
+
+.gate-brand {
+  margin: 0;
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.gate-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.gate-desc {
+  margin: -6px 0 2px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+.gate-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.gate-label {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.gate-input {
+  width: 100%;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-ctl);
+  outline: none;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+
+.gate-input:focus {
+  background: var(--surface);
+  border-color: var(--ink);
+}
+
+.gate-error {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: var(--rose-deep);
+  background: var(--rose-soft);
+  border-radius: 8px;
+}
+
+.gate-submit {
+  margin-top: 2px;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: #fff;
+  background: var(--ink);
+  border: 0;
+  border-radius: var(--r-ctl);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+/* 禁用态用浅灰底 + 灰字，而不是把黑底调低透明度 ——
+   后者在浅色页面上会变成一块半透明灰，看着像按钮坏了。 */
+.gate-submit:disabled {
+  background: var(--line-2);
+  color: var(--ink-3);
+  cursor: default;
+}
+
+.gate-hint {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--ink-3);
+}

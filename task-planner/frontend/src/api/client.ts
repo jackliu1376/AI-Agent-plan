@@ -46,6 +46,22 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 会话失效时的回调。
+ *
+ * 服务端换了 `WEB_ACCESS_TOKEN` 之后，已登录的页面会突然开始收 401。
+ * 没有这个回调的话，用户只会看到一连串「需要访问令牌」的报错，却不知道
+ * 该去哪里重新登录。
+ *
+ * `/auth/*` 自己的 401 不触发它 —— 那是「密码输错了」，登录页要留在原地
+ * 显示错误，而不是再跳一次登录页。
+ */
+let unauthorizedHandler: (() => void) | null = null
+
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  unauthorizedHandler = fn
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let resp: Response
   try {
@@ -64,6 +80,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!resp.ok) {
+    // 先通知再抛错：调用方多半只 catch 一下就显示提示，
+    // 放在抛错之后的话这段逻辑永远等不到执行。
+    if (resp.status === 401 && !path.startsWith('/auth/')) {
+      unauthorizedHandler?.()
+    }
     let detail = `HTTP ${resp.status}`
     try {
       const body = await resp.json()
@@ -145,6 +166,39 @@ export function listTools(): Promise<ToolsResponse> {
  */
 export function getMapConfig(): Promise<MapConfig> {
   return request<MapConfig>('/map/config')
+}
+
+/**
+ * 鉴权状态。
+ *
+ * `required` 为 false 表示服务端没配 `WEB_ACCESS_TOKEN`（本地开发默认），
+ * 此时前端不做任何拦截。`authenticated` 在不需要鉴权时恒为 true。
+ */
+export interface AuthStatus {
+  required: boolean
+  authenticated: boolean
+}
+
+export function getAuthStatus(): Promise<AuthStatus> {
+  return request<AuthStatus>('/auth/status')
+}
+
+/**
+ * 用令牌换登录 cookie。
+ *
+ * 为什么不是把令牌存进 localStorage 再逐个请求带 header：
+ * SSE 用的是浏览器原生 `EventSource`，它**不能设置自定义请求头**。
+ * 凭证只有放在 cookie 里，事件流才带得上去。
+ */
+export function login(token: string): Promise<{ ok: boolean; required: boolean }> {
+  return request<{ ok: boolean; required: boolean }>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  })
+}
+
+export function logout(): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('/auth/logout', { method: 'POST' })
 }
 
 // ---------------------------------------------------------------------------

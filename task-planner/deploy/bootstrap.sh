@@ -100,9 +100,27 @@ else
   chmod -R a+rX "$UV_PYTHON_INSTALL_DIR" "$APP_DIR/.venv" 2>/dev/null || true
 fi
 
-# 运行期需要可写的两个目录
+# 运行期需要可写的目录
 mkdir -p logs outputs
 chown -R "$APP_USER:$APP_USER" "$APP_DIR/logs" "$APP_DIR/outputs"
+
+# 景点库**不在 git 里**（1.3MB 的二进制，由 seed_generated.py 生成）。
+# 首次查询时 seed.connect() 会自动建，所以这个目录必须对运行用户可写 ——
+# 否则 sqlite 直接报 "unable to open database file"，界面上表现为
+# 「景点库 · 未取到」，而且模型只能退回去用高德实时查，白白多烧工具预算。
+#
+# 只改目录属主、不动里面的源码文件。
+mkdir -p "$APP_DIR/mcp_server/data"
+chown "$APP_USER:$APP_USER" "$APP_DIR/mcp_server/data"
+
+# 预生成一次，把「权限不对」提前暴露在安装阶段，而不是等用户第一次查景点。
+if sudo -u "$APP_USER" "$APP_DIR/.venv/bin/python" -c \
+    "from mcp_server.data import seed; print('景点库就绪：%d 条' % seed.seed())" 2>/dev/null; then
+  :
+else
+  echo "⚠️  景点库预生成失败 —— 检查 $APP_DIR/mcp_server/data 的属主与权限"
+fi
+
 chown "$APP_USER:$APP_USER" "$APP_DIR/.env" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------

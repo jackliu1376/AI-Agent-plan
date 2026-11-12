@@ -19,6 +19,21 @@ import type { SessionStatus } from '../api/types'
 import { fmtWhen } from '../lib/formatTime'
 import { PaletteSwitch } from './PaletteSwitch'
 
+/**
+ * 网站备案号。
+ *
+ * 工信部要求首页展示备案号并链接到备案查询系统，否则会被责令整改。
+ * 放侧栏底部而不是页面最下方：这个应用是 SPA，主区域高度随内容变化，
+ * 而侧栏常驻 —— 任何页面、任何滚动位置都能看到，不会被判为未悬挂。
+ */
+const ICP_BEIAN = '京ICP备2026078625号-1'
+
+/**
+ * 公安联网备案号。审核通过后填这里，格式类似
+ * `京公网安备 110105020XXXXX号`。留空则不渲染。
+ */
+const POLICE_BEIAN = ''
+
 /** Cairn 的品牌标记：三块叠石。用 inline SVG 而不是图片，颜色随主题。 */
 function BrandMark({ size = 28 }: { size?: number }) {
   return (
@@ -323,6 +338,29 @@ export function Rail({
         <div className={`v health-${health}`} title={HEALTH_TEXT[health]}>
           <i />
           <span className="v-text">{HEALTH_TEXT[health]}</span>
+        </div>
+
+        <div className="rail-beian">
+          <a
+            href="https://beian.miit.gov.cn/"
+            target="_blank"
+            rel="noreferrer noopener"
+            title={ICP_BEIAN}
+          >
+            <span className="beian-full">{ICP_BEIAN}</span>
+            {/* 折叠态只有 60px 宽，完整备案号放不下 */}
+            <span className="beian-short">ICP</span>
+          </a>
+          {POLICE_BEIAN.length > 0 && (
+            <a
+              href="https://beian.mps.gov.cn/"
+              target="_blank"
+              rel="noreferrer noopener"
+              title={POLICE_BEIAN}
+            >
+              {POLICE_BEIAN}
+            </a>
+          )}
         </div>
       </div>
     </aside>

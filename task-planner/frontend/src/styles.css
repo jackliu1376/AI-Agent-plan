@@ -472,6 +472,47 @@ body {
   gap: 6px;
 }
 
+/* 备案号。常驻在侧栏最底部 —— 任何页面、任何滚动位置都能看到，
+   不会被判为「未悬挂备案号」。 */
+.rail-beian {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+.rail-beian a {
+  color: inherit;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.rail-beian a:hover {
+  color: var(--ink-2);
+}
+
+/* 折叠态只有 60px 宽，完整备案号放不下，缩成三个字母 */
+.beian-short {
+  display: none;
+}
+
+.shell.collapsed .beian-full {
+  display: none;
+}
+
+.shell.collapsed .beian-short {
+  display: inline;
+}
+
+.shell.collapsed .rail-beian {
+  margin-top: 10px;
+  align-items: center;
+  font-size: 10px;
+}
+
 .rail-foot .v i {
   width: 5px;
   height: 5px;
